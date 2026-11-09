@@ -325,8 +325,37 @@ st.markdown(tarjeta("Puedes pedir hasta", f"{es(maximo)} $",
                     f"≈ {es(maximo / usd_por_eur)} € · y no pagar nada hasta {mes_texto(fin_destino)}, "
                     f"cuando termina {nombre_de(destino)}", True), unsafe_allow_html=True)
 st.write("")
-prestamo = st.slider("¿Cuánto quieres pedir? (en $)", min_value=0, max_value=int(maximo // 50 * 50),
-                     value=int(maximo // 50 * 50), step=50)
+# Cantidad a pedir: una caja grande donde escribirla y atajos al 50 %, 75 % y máximo
+tope = int(maximo // 50 * 50)
+if st.session_state.get("lend_tope") != tope:          # cambia el máximo (otra cartera u otro proyecto)
+    st.session_state.lend_tope = tope
+    st.session_state.importe_pedir = tope
+st.session_state.importe_pedir = min(int(st.session_state.get("importe_pedir", tope)), tope)
+
+
+def _fijar_importe(fraccion):
+    st.session_state.importe_pedir = int(tope * fraccion // 50 * 50)
+
+
+st.markdown(f"""
+<style>
+.st-key-importe_pedir input {{ font-size: 30px !important; font-weight: 800 !important; color: {NAVY} !important;
+    height: 64px !important; }}
+.st-key-importe_pedir [data-testid="stNumberInputContainer"] {{ border: 2px solid {AMBAR} !important;
+    border-radius: 12px !important; background: #ffffff !important; height: 68px !important; }}
+.st-key-importe_pedir [data-testid="stNumberInputContainer"] input {{ background: #ffffff !important; }}
+</style>""", unsafe_allow_html=True)
+st.markdown(f"<div style='font-size:22px; font-weight:800; color:{NAVY}; margin-top:6px;'>"
+            f"¿Cuánto quieres pedir?</div><div style='color:{GRIS}; font-size:14px; margin-bottom:6px;'>"
+            f"Escribe la cantidad en dólares (como máximo {es(tope)} $) o elige una opción.</div>",
+            unsafe_allow_html=True)
+c_imp, c_b1, c_b2, c_b3 = st.columns([2.2, 1, 1, 1], vertical_alignment="center")
+prestamo = c_imp.number_input("Cantidad en $", min_value=0, max_value=tope, step=100, key="importe_pedir",
+                              label_visibility="collapsed", format="%d")
+c_b1.button("La mitad", use_container_width=True, on_click=_fijar_importe, args=(0.5,))
+c_b2.button("El 75 %", use_container_width=True, on_click=_fijar_importe, args=(0.75,))
+c_b3.button("El máximo", use_container_width=True, on_click=_fijar_importe, args=(1.0,))
+st.caption(f"{es(prestamo)} $ ≈ {es(prestamo / usd_por_eur)} €")
 tokens_compra = prestamo / precio_usd if precio_usd > 0 else 0
 interes = calculo_lend.intereses(prestamo, apr, T)
 devolver = prestamo + interes
