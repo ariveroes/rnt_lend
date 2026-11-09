@@ -9,9 +9,8 @@ SUPUESTOS
 - La deuda crece con los intereses de forma continua, como en el protocolo:
   D(t) = D0 · e^(r·t). No se paga nada hasta el final.
 - La garantía vale lo que dice el oráculo de RNT Lend y ese valor no cambia.
-- La deuda no puede pasar nunca del LIMITE_DEUDA (78 %) del valor de la garantía,
-  dos puntos por debajo del 80 % en el que se liquida. Si algún activo tiene un
-  umbral de liquidación menor, se deja el mismo margen de dos puntos.
+- La deuda no puede pasar del umbral de liquidación de la garantía (80 %): el último
+  día, con todos los intereses, el factor de salud llega como mínimo a 1.
 - Al pedir el préstamo, además, el protocolo no deja superar el LTV de cada activo.
 - Si un inmueble de la garantía termina antes que el proyecto que se compra, desde
   ese día deja de contar como garantía (sus tokens desaparecen).
@@ -24,8 +23,8 @@ from __future__ import annotations
 
 import math
 
-LIMITE_DEUDA = 0.78
-MARGEN_LIQUIDACION = 0.02
+LIMITE_DEUDA = 0.80             # umbral de liquidación normal de RNT Lend
+MARGEN_LIQUIDACION = 0.0
 
 
 def limite_activo(umbral: float) -> float:
