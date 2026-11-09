@@ -31,11 +31,14 @@ import altair as alt
 import pandas as pd
 
 from modules import aave_lend, calculo_lend, data_loader
-from modules.rentabilidad_compra import rentabilidad_ajustada
+from modules.rentabilidad_compra import TASA_REINVERSION, ganancia_proyecto, rentabilidad_ajustada
 
 USDT_POLYGON = "0xc2132d05d31c914a87c6611c10748aeb04b58e8f"
 APR_DEFECTO = 0.10
 USD_POR_EUR_DEFECTO = 1.14
+SIMBOLOS_RNT_EN_ESTATUS = ("xrnt",)    # RNT puestos para conseguir el estatus
+RNT_POR_ESTATUS = {"SuperReentel": 28000, "ReentelPro": 14000}
+ESTATUS = ["Reentel", "ReentelPro", "SuperReentel"]
 MESES_MINIMOS = 4                     # como en el simulador: no se proponen proyectos que terminan ya
 NAVY, AMBAR, AMBAR_OSCURO, GRIS, ROJO = "#1f2937", "#fca311", "#d97706", "#6b7280", "#dc2626"
 MESES_ES = ("enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre",
@@ -116,7 +119,17 @@ def _leer_wallet(wallet, clave, activos_lista):
     from utils import fetch_all_token_txs
     activos = dict(activos_lista)
     cuenta = aave_lend.get_user_account_data(wallet, clave)
-    tocados = {tx["contractAddress"].lower() for tx in fetch_all_token_txs(wallet, clave)}
+    txs = fetch_all_token_txs(wallet, clave)
+    tocados = {tx["contractAddress"].lower() for tx in txs}
+    # RNT puestos para el estatus (token xRNT): entradas menos salidas
+    rnt_estatus = 0.0
+    for tx in txs:
+        if str(tx.get("tokenSymbol", "")).lower() in SIMBOLOS_RNT_EN_ESTATUS:
+            valor = int(tx.get("value", 0)) / 10 ** int(tx.get("tokenDecimal") or 18)
+            if str(tx.get("to", "")).lower() == wallet:
+                rnt_estatus += valor
+            elif str(tx.get("from", "")).lower() == wallet:
+                rnt_estatus -= valor
     tokens = {}
     for addr, cfg in activos.items():
         if addr not in tocados and cfg.get("atoken", "").lower() not in tocados:
@@ -126,7 +139,7 @@ def _leer_wallet(wallet, clave, activos_lista):
         suelto = aave_lend.balance_of(addr, wallet, dec, clave)
         if en_garantia > 0.0001 or suelto > 0.0001:
             tokens[addr] = {"garantia": en_garantia, "wallet": suelto}
-    return cuenta, tokens
+    return cuenta, tokens, max(0.0, rnt_estatus)
 
 
 # ---------- Cabecera ----------
@@ -178,7 +191,7 @@ def color_hf(hf):
 modo = st.radio("¿Cómo quieres ver tu cartera?",
                 ["Con mi wallet", "Sin wallet: elijo mis inmuebles y tokens"], horizontal=True)
 
-garantias, deuda0, tokens = [], 0.0, {}
+garantias, deuda0, tokens, rnt_estatus = [], 0.0, {}, 0.0
 if modo == "Con mi wallet":
     st.markdown("## Tu situación actual")
     c1, c2 = st.columns([3, 1])
@@ -193,7 +206,7 @@ if modo == "Con mi wallet":
     datos = st.session_state.get("lend_wallet")
     if not datos:
         st.stop()
-    _, cuenta, tokens = datos
+    _, cuenta, tokens, rnt_estatus = datos
     if not cuenta:
         st.warning("No hemos podido leer tu posición en RNT Lend. Prueba de nuevo en unos minutos.")
     cuenta = cuenta or {}
@@ -260,6 +273,12 @@ if modo == "Con mi wallet":
         if sirve_de_garantia(addr) and n > 0:
             garantias.append(garantia_de(addr, n))
 
+detectado = ("SuperReentel" if rnt_estatus >= RNT_POR_ESTATUS["SuperReentel"]
+             else "ReentelPro" if rnt_estatus >= RNT_POR_ESTATUS["ReentelPro"] else "Reentel")
+estatus = st.selectbox(
+    "Tu estatus", ESTATUS, index=ESTATUS.index(detectado),
+    help=("Lo hemos detectado por los RNT que tienes en estatus en tu wallet; cámbialo si no es correcto."
+          if modo == "Con mi wallet" else "Cambia la rentabilidad del proyecto y la de lo que reinviertes."))
 st.markdown("**¿En qué proyecto quieres invertir?**")
 candidatos = []
 for addr, r in por_addr.items():
@@ -284,7 +303,7 @@ T = meses_hasta(fin_destino)
 divisa = "USD" if str(fila.get("Divisa", "EUR")).upper() in ("USD", "$", "USDT") else "EUR"
 precio = _num(fila.get("Precio Emisión"), 100.0)
 precio_usd = precio * (usd_por_eur if divisa == "EUR" else 1.0)
-rent = rentabilidad_ajustada(fila, "Reentel")
+rent = rentabilidad_ajustada(fila, estatus)
 nuevo_garantia = sirve_de_garantia(destino)
 st.caption(f"Termina en {mes_texto(fin_destino)} (unos {es(T)} meses) · precio por token "
            f"{es(precio, 2)} {'€' if divisa == 'EUR' else '$'} · rentabilidad total estimada "
@@ -359,16 +378,27 @@ st.caption(f"{es(prestamo)} $ ≈ {es(prestamo / usd_por_eur)} €")
 tokens_compra = prestamo / precio_usd if precio_usd > 0 else 0
 interes = calculo_lend.intereses(prestamo, apr, T)
 devolver = prestamo + interes
-ganancia = prestamo * rent["total"] / 100
+# Lo que gana el proyecto hasta su final con el estatus del usuario: rentas (reinvertidas al cobrarlas,
+# como en el simulador) y venta
+# (el proyecto termina justo al final del plazo: así no se cuenta reinversión después de su venta)
+fila_plazo = dict(fila)
+fila_plazo["meses_hasta_fin"] = T
+ganancia = ganancia_proyecto(prestamo, fila_plazo, estatus, None, T)
+neto = ganancia - interes
 t1, t2, t3 = st.columns(3)
 t1.markdown(tarjeta("Con lo que pides compras", f"{es(tokens_compra, 1)} tokens",
                     f"de {nombre_de(destino)} ({es(prestamo)} $)"), unsafe_allow_html=True)
 t2.markdown(tarjeta("Al final devuelves", f"{es(devolver)} $",
                     f"{es(prestamo)} $ del préstamo + {es(interes)} $ de intereses ({es(apr * 100, 1)} % anual)"),
             unsafe_allow_html=True)
-t3.markdown(tarjeta("Te queda", f"{'+' if ganancia - interes >= 0 else '−'}{es(abs(ganancia - interes))} $",
-                    f"lo que gana el proyecto (~{es(ganancia)} $) menos los intereses", ganancia > interes),
+t3.markdown(tarjeta("Ganas de más", f"{'+' if neto >= 0 else '−'}{es(abs(neto))} $",
+                    f"lo que gana el proyecto con tu estatus (~{es(ganancia)} $) menos los intereses", neto > 0),
             unsafe_allow_html=True)
+if neto <= 0 and prestamo > 0:
+    st.info(f"Con tu estatus ({estatus}) y {nombre_de(destino)}, ahora mismo no te compensa pedir financiación: "
+            f"hasta {mes_texto(fin_destino)} los intereses suman un {es(interes / prestamo * 100)} % de lo que pides "
+            f"y el proyecto te daría un {es(ganancia / prestamo * 100)} %. Prueba con otro proyecto"
+            + (" o con un estatus superior." if estatus != "SuperReentel" else "."))
 
 # Gráfico: deuda sobre garantía hasta el final
 puntos = calculo_lend.evolucion(garantias, deuda0, prestamo, apr, T, nuevo)
@@ -425,8 +455,8 @@ with st.expander("Cómo se calcula"):
         f"antes que el proyecto que compras, deja de contar ese día.\n"
         f"- **Límite:** la deuda no pasa del 80 % de la garantía, donde se liquida (factor de salud 1). Además, hoy "
         f"no se puede pedir más de lo que permite RNT Lend para cada inmueble.\n"
-        f"- **Lo que gana el proyecto:** su rentabilidad total estimada ({es(rent['total'], 1)} %: rentas y venta) "
-        f"sobre lo que compras, sin estatus.\n"
+        f"- **Lo que gana el proyecto:** con tu estatus ({estatus}): las rentas, que se reinvierten al cobrarlas al "
+        f"{es(TASA_REINVERSION.get(estatus, 11.0))} % anual (como en el simulador), y la venta al final.\n"
         f"- Importes en dólares porque el préstamo es en USDT (1 € = {es(usd_por_eur, 4)} $).")
 st.caption("Simulación informativa con estimaciones: no es asesoramiento ni una oferta de préstamo, y no garantiza "
            "resultados. Revisa siempre tu factor de salud en RNT Lend.")
