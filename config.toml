@@ -1,0 +1,11 @@
+# Tema de la app con la paleta y la tipografía del informe mensual de Reental Wealth.
+# Este archivo va en la carpeta .streamlit/ de la raíz del repositorio.
+[theme]
+base = "light"
+primaryColor = "#fca311"
+backgroundColor = "#f9fafb"
+secondaryBackgroundColor = "#f1f3f5"
+textColor = "#1f2937"
+# Fustat en toda la app, incluidas las tablas y los gráficos
+font = "Fustat:https://fonts.googleapis.com/css2?family=Fustat:wght@400;500;600;700;800&display=swap, sans-serif"
+chartCategoricalColors = ["#fca311", "#1f2937", "#15803d", "#fcd287", "#9ca1aa", "#f5a11f", "#3e4753"]
