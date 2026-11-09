@@ -64,10 +64,12 @@ def _num(v, defecto=0.0):
         return defecto
 
 
-def tarjeta(titulo, valor, sub="", destacada=False):
-    fondo, borde, color = ("#fff4de", AMBAR, AMBAR_OSCURO) if destacada else ("#ffffff", "#e5e7eb", NAVY)
+def tarjeta(titulo, valor, sub="", destacada=False, alto=False, color=None):
+    fondo, borde, color_def = ("#fff4de", AMBAR, AMBAR_OSCURO) if destacada else ("#ffffff", "#e5e7eb", NAVY)
+    color = color or color_def
+    # alto=True: las tres tarjetas de la situación actual, todas del mismo tamaño
     return (f"<div style='background:{fondo}; border:2px solid {borde}; border-radius:14px; padding:14px 18px; "
-            f"height:100%;'><div style='color:{GRIS}; font-size:13px; font-weight:600;'>{titulo}</div>"
+            f"height:100%; {'min-height:140px; box-sizing:border-box;' if alto else ''}'><div style='color:{GRIS}; font-size:13px; font-weight:600;'>{titulo}</div>"
             f"<div style='font-size:28px; font-weight:800; color:{color}; line-height:1.25; margin:4px 0;'>{valor}</div>"
             f"<div style='color:{NAVY}; font-size:13px;'>{sub}</div></div>")
 
@@ -129,10 +131,9 @@ def _leer_wallet(wallet, clave, activos_lista):
 
 # ---------- Cabecera ----------
 st.markdown(f"<div style='font-size:34px; font-weight:800; color:{NAVY}; line-height:1.2;'>"
-            f"¿Cuánto puedes pedir en RNT Lend?</div>", unsafe_allow_html=True)
-st.caption("Calcula cuánto puedes pedir con tus inmuebles como garantía para invertir en un nuevo proyecto, "
-           "sin pagar nada hasta que termine. La deuda, con los intereses, nunca pasa del "
-           f"{es(calculo_lend.LIMITE_DEUDA * 100)} % de tu garantía (la liquidación es al 80 %).")
+            f"Posición de mi cartera en RNT Lend</div>", unsafe_allow_html=True)
+st.caption("Revisa tu situación actual en RNT Lend o simula cuánta financiación extra podrías pedir usando tus "
+           "tokens como garantía, sin pagar nada hasta que termine el proyecto en el que inviertas.")
 
 clave = api_key()
 with st.spinner("Leyendo los proyectos y RNT Lend…"):
@@ -167,13 +168,19 @@ def garantia_de(addr, tokens):
             "meses_fin": meses_hasta(fin), "fecha_fin": fin}
 
 
-# ---------- 1. Tu cartera ----------
-st.markdown("### 1. Tus inmuebles")
-modo = st.radio("¿Cómo quieres indicar tus inmuebles?",
+def color_hf(hf):
+    if hf is None:
+        return "#15803d"
+    return ROJO if hf < 1.1 else (AMBAR_OSCURO if hf < 1.5 else "#15803d")
+
+
+# ---------- Bloque 1: tu situación actual ----------
+modo = st.radio("¿Cómo quieres ver tu cartera?",
                 ["Con mi wallet", "Sin wallet: elijo mis inmuebles y tokens"], horizontal=True)
 
-garantias, deuda0 = [], 0.0
+garantias, deuda0, tokens = [], 0.0, {}
 if modo == "Con mi wallet":
+    st.markdown("## Tu situación actual")
     c1, c2 = st.columns([3, 1])
     wallet = c1.text_input("Dirección de tu wallet", placeholder="0x…", label_visibility="collapsed").strip()
     if c2.button("Ver mi posición", type="primary", use_container_width=True):
@@ -184,44 +191,50 @@ if modo == "Con mi wallet":
                 st.session_state.lend_wallet = (wallet.lower(),) + _leer_wallet(
                     wallet.lower(), clave, tuple(sorted(activos.items())))
     datos = st.session_state.get("lend_wallet")
-    if datos:
-        _, cuenta, tokens = datos
-        if not cuenta:
-            st.warning("No hemos podido leer tu posición en RNT Lend. Prueba de nuevo en unos minutos.")
-        deuda0 = (cuenta or {}).get("deuda_usd", 0.0)
-        hf = (cuenta or {}).get("health_factor")
-        k1, k2, k3 = st.columns(3)
-        k1.markdown(tarjeta("Garantía en RNT Lend", f"{es((cuenta or {}).get('colateral_usd', 0))} $"),
-                    unsafe_allow_html=True)
-        k2.markdown(tarjeta("Deuda actual", f"{es(deuda0)} $"), unsafe_allow_html=True)
-        k3.markdown(tarjeta("Factor de salud", es(hf, 2) if hf else "Sin deuda",
-                            f"tu deuda es el {es(deuda0 / cuenta['colateral_usd'] * 100, 1)} % de tu garantía"
-                            if hf and cuenta.get("colateral_usd") else ""), unsafe_allow_html=True)
-        sueltos = {a: t for a, t in tokens.items() if t["wallet"] > 0.0001 and sirve_de_garantia(a)}
-        usar_sueltos = False
-        if sueltos:
-            usar_sueltos = st.checkbox(
-                "Contar también los tokens que tienes en tu wallet y aún no están en garantía "
-                "(tendrías que depositarlos en RNT Lend)", value=True)
-        filas = []
-        for addr, t in tokens.items():
-            cuenta_tokens = t["garantia"] + (t["wallet"] if usar_sueltos and sirve_de_garantia(addr) else 0.0)
-            g = garantia_de(addr, cuenta_tokens)
-            vencido = g["meses_fin"] is not None and g["meses_fin"] <= 0
-            cuenta_si = sirve_de_garantia(addr) and not vencido
-            if sirve_de_garantia(addr) and cuenta_tokens > 0:
-                garantias.append(g)
-            filas.append({"Proyecto": nombre_de(addr), "En garantía": round(t["garantia"], 2),
-                          "En tu wallet": round(t["wallet"], 2),
-                          "¿Cuenta como garantía?": ("Sí" if cuenta_si else
-                                                    "No, ya pasó su fecha de fin" if vencido else "No"),
-                          "Valor que cuenta ($)": round(g["valor_usd"]) if cuenta_si else 0,
-                          "Fin estimado": g["fecha_fin"].strftime("%m/%Y") if hasattr(g["fecha_fin"], "year") else "—"})
-        if filas:
-            st.dataframe(pd.DataFrame(filas), hide_index=True, use_container_width=True)
-        else:
-            st.info("No hemos encontrado tokens de inmuebles que se puedan usar como garantía en esta wallet.")
+    if not datos:
+        st.stop()
+    _, cuenta, tokens = datos
+    if not cuenta:
+        st.warning("No hemos podido leer tu posición en RNT Lend. Prueba de nuevo en unos minutos.")
+    cuenta = cuenta or {}
+    deuda0 = cuenta.get("deuda_usd", 0.0)
+    colateral = cuenta.get("colateral_usd", 0.0)
+    hf = cuenta.get("health_factor")
+    k1, k2, k3 = st.columns(3)
+    k1.markdown(tarjeta("¿Cuánto tengo ya aportado como garantía en RNT Lend?", f"{es(colateral)} $",
+                        f"≈ {es(colateral / usd_por_eur)} €", alto=True), unsafe_allow_html=True)
+    k2.markdown(tarjeta("¿A cuánto asciende mi deuda actualmente?", f"{es(deuda0)} $",
+                        "Lo que pediste más los intereses acumulados", alto=True), unsafe_allow_html=True)
+    k3.markdown(tarjeta("¿Cuál es mi factor de salud?", es(hf, 2) if hf else "Sin deuda",
+                        "Se liquida si baja de 1, es decir, cuando tu deuda llega al 80&nbsp;% de tu garantía."
+                        if hf else "Sin riesgo de liquidación.", alto=True, color=color_hf(hf)),
+                unsafe_allow_html=True)
+    st.write("")
+    filas = []
+    for addr, t in tokens.items():
+        r = por_addr.get(addr)
+        fin = r.get("fecha_fin_calculo") if r is not None else None
+        m = meses_hasta(fin)
+        nombre = nombre_de(addr)
+        vencido = m is not None and m <= 0
+        if not sirve_de_garantia(addr):
+            nombre += " · no admite garantía"
+        elif vencido:
+            nombre += " · ya pasó su fecha de fin, no cuenta"
+        total = t["garantia"] + t["wallet"]
+        filas.append({
+            "Proyecto": nombre,
+            "% de tus tokens en garantía": f"{es(t['garantia'] / total * 100)} %" if total > 0 else "—",
+            "Tokens adicionales que puedes añadir como garantía": (es(t["wallet"], 2)
+                                                                   if sirve_de_garantia(addr) and not vencido
+                                                                   else "—"),
+            "Fin estimado": fin.strftime("%m/%Y") if hasattr(fin, "year") else "—"})
+    if filas:
+        st.dataframe(pd.DataFrame(filas), hide_index=True, use_container_width=True)
+    else:
+        st.info("No hemos encontrado tokens de inmuebles en esta wallet.")
 else:
+    st.markdown("## Tu cartera")
     opciones = sorted([a for a in activos if sirve_de_garantia(a) and a in por_addr
                        and "CERRAD" not in str(por_addr[a].get("ESTADO", "")).upper()], key=nombre_de)
     base = pd.DataFrame({"Proyecto": [nombre_de(a) for a in opciones], "Tokens": [0.0] * len(opciones)})
@@ -235,8 +248,19 @@ else:
             garantias.append(garantia_de(addr, _num(n)))
     deuda0 = st.number_input("¿Ya tienes deuda en RNT Lend? (en $)", min_value=0.0, value=0.0, step=100.0)
 
-# ---------- 2. El proyecto en el que inviertes ----------
-st.markdown("### 2. El proyecto en el que quieres invertir")
+# ---------- Bloque 2: simula una financiación extra ----------
+st.markdown("## Simula una financiación extra")
+if modo == "Con mi wallet":
+    sueltos = {a: t for a, t in tokens.items() if t["wallet"] > 0.0001 and sirve_de_garantia(a)}
+    usar_sueltos = bool(sueltos) and st.checkbox(
+        "Contar los tokens adicionales que puedes añadir como garantía (tendrías que depositarlos en RNT Lend)",
+        value=True)
+    for addr, t in tokens.items():
+        n = t["garantia"] + (t["wallet"] if usar_sueltos else 0.0)
+        if sirve_de_garantia(addr) and n > 0:
+            garantias.append(garantia_de(addr, n))
+
+st.markdown("**¿En qué proyecto quieres invertir?**")
 candidatos = []
 for addr, r in por_addr.items():
     fin = r.get("fecha_fin_calculo")
@@ -275,10 +299,11 @@ cfg_nuevo = activos.get(destino) or {}
 nuevo = {"garantia": usar_nuevo, "ltv": cfg_nuevo.get("ltv", 0.0), "umbral": cfg_nuevo.get("umbral", 0.0),
          "ratio": (precios.get(destino, precio_usd) / precio_usd) if precio_usd > 0 else 1.0}
 
-# ---------- 3. Resultado ----------
-st.markdown("### 3. Cuánto puedes pedir")
+# ---------- Resultado ----------
+st.markdown("### ¿Cuánto puedes pedir?")
 if not garantias:
-    st.info("Indica tus inmuebles en el punto 1 para calcularlo.")
+    st.info("Indica tus inmuebles arriba para calcularlo." if modo != "Con mi wallet"
+            else "Para simularlo necesitas tokens que sirvan de garantía.")
     st.stop()
 with st.spinner("Consultando el tipo de interés de RNT Lend…"):
     apr, fuente_apr = _tipo_interes(clave)
