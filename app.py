@@ -4,7 +4,7 @@ RNT LEND - ¿Cuánto puedo pedir?
 Herramienta pública: el usuario pone su wallet (o elige a mano sus inmuebles y
 tokens) y el proyecto en el que quiere invertir. Calcula cuánto puede pedir hoy en
 RNT Lend con sus inmuebles como garantía para no pagar nada hasta que ese proyecto
-termine, sin que la deuda pase nunca del 78 % de la garantía (se liquida al 80 %).
+termine, sin que la deuda llegue a superar el 80 % de la garantía (donde se liquida).
 
 ESTRUCTURA
   app.py                      → esta pantalla
@@ -346,8 +346,7 @@ puntos = calculo_lend.evolucion(garantias, deuda0, prestamo, apr, T, nuevo)
 hoy = pd.Timestamp(date.today())
 datos_g = pd.DataFrame([{"Fecha": hoy + pd.Timedelta(days=m * 30.4375), "Deuda sobre garantía (%)": p}
                         for m, p, _, _ in puntos if p is not None])
-lineas = pd.DataFrame([{"y": calculo_lend.LIMITE_DEUDA * 100, "Línea": "Límite que usamos (78 %)"},
-                       {"y": 80.0, "Línea": "Liquidación (80 %)"}])
+lineas = pd.DataFrame([{"y": 80.0, "Línea": "Liquidación (80 %)"}])
 graf = alt.Chart(datos_g).mark_line(color=NAVY, strokeWidth=3).encode(
     x=alt.X("Fecha:T", title=None, axis=alt.Axis(format="%m/%Y")),
     y=alt.Y("Deuda sobre garantía (%):Q", title="Deuda sobre garantía (%)", scale=alt.Scale(domain=[0, 90])),
@@ -356,10 +355,20 @@ graf = alt.Chart(datos_g).mark_line(color=NAVY, strokeWidth=3).encode(
 reglas = alt.Chart(lineas).mark_rule(strokeDash=[6, 4], strokeWidth=2).encode(
     y=alt.Y("y:Q", title="Deuda sobre garantía (%)"),
     color=alt.Color("Línea:N", legend=alt.Legend(orient="bottom", title=None),
-                    scale=alt.Scale(domain=["Límite que usamos (78 %)", "Liquidación (80 %)"], range=[AMBAR, ROJO])))
+                    scale=alt.Scale(domain=["Liquidación (80 %)"], range=[ROJO])))
 st.write("")
 st.markdown("**Cómo evoluciona tu deuda hasta el final** (con los intereses sumados, sin pagar nada)")
 st.altair_chart((graf + reglas).properties(height=300), use_container_width=True)
+pct_hoy = next((p for _, p, _, _ in puntos if p is not None), None)
+pct_fin = next((p for _, p, _, _ in reversed(puntos) if p is not None), None)
+if pct_hoy is not None and pct_fin is not None:
+    st.caption(f"La línea es tu deuda comparada con el valor de tu garantía. Al pedir, tu deuda es el "
+               f"{es(pct_hoy)} % de tu garantía (factor de salud {es(80 / pct_hoy, 2)}); con los intereses va subiendo "
+               f"hasta el {es(pct_fin)} % el último día (factor de salud {es(80 / pct_fin, 2)}). Si la línea toca la "
+               f"roja, se liquida. Los saltos son inmuebles de tu garantía que terminan y dejan de contar.")
+if pct_fin is not None and pct_fin > 76:
+    st.warning("Con esta cantidad, el último día quedarías casi en el punto de liquidación: una bajada del valor de "
+               "tu garantía o una subida del tipo de interés te liquidaría. Pide menos para tener margen.")
 
 # Qué limita la cantidad
 lim = res["limita"]
@@ -369,8 +378,8 @@ elif lim["motivo"] == "fin_garantia":
     motivo = (f"que {', '.join(lim['salen'])} termina antes que {nombre_de(destino)} y desde ese momento deja de "
               f"contar como garantía.")
 else:
-    motivo = (f"que, con los intereses, tu deuda llegue al {es(calculo_lend.LIMITE_DEUDA * 100)} % de tu garantía "
-              f"el último día.")
+    motivo = ("que, con los intereses, tu deuda llegue al 80 % de tu garantía el último día, justo donde se "
+              "liquida (factor de salud 1).")
 st.markdown(f"**Qué marca el máximo:** {motivo}")
 antes = [g for g in res["activas"] if g.get("meses_fin") is not None and g["meses_fin"] < T]
 if antes:
@@ -385,8 +394,8 @@ with st.expander("Cómo se calcula"):
         f"- **Intereses:** se suman a la deuda cada día y no se paga nada hasta el final.\n"
         f"- **Garantía:** el valor de tus tokens según RNT Lend, sin cambios en el tiempo. Si un inmueble termina "
         f"antes que el proyecto que compras, deja de contar ese día.\n"
-        f"- **Límite:** la deuda nunca pasa del {es(calculo_lend.LIMITE_DEUDA * 100)} % de la garantía (la "
-        f"liquidación es al 80 %). Además, hoy no se puede pedir más de lo que permite RNT Lend para cada inmueble.\n"
+        f"- **Límite:** la deuda no pasa del 80 % de la garantía, donde se liquida (factor de salud 1). Además, hoy "
+        f"no se puede pedir más de lo que permite RNT Lend para cada inmueble.\n"
         f"- **Lo que gana el proyecto:** su rentabilidad total estimada ({es(rent['total'], 1)} %: rentas y venta) "
         f"sobre lo que compras, sin estatus.\n"
         f"- Importes en dólares porque el préstamo es en USDT (1 € = {es(usd_por_eur, 4)} $).")
