@@ -276,14 +276,22 @@ if modo == "Con mi wallet":
         opcion = st.radio("Tokens adicionales", ["Sí (indica a continuación cuánto quieres aportar como garantía adicional)", "No"],
                           label_visibility="collapsed")
         if opcion.startswith("Sí"):
+            st.caption("Marca «Añadir el 100 %» para aportar todos los tokens disponibles, o desmárcalo y escribe "
+                       "cuántos quieres aportar.")
             base = pd.DataFrame({"Proyecto": [nombre_de(a) for a in sueltos],
                                  "Disponibles en tu wallet": [round(tokens[a]["wallet"], 2) for a in sueltos],
-                                 "Tokens que añades": [round(tokens[a]["wallet"], 2) for a in sueltos]})
-            editado = st.data_editor(base, hide_index=True, use_container_width=True, key="tokens_anadir",
-                                     disabled=["Proyecto", "Disponibles en tu wallet"],
-                                     column_config={"Tokens que añades": st.column_config.NumberColumn(
-                                         min_value=0.0, step=1.0)})
-            anadir = {a: min(_num(n), tokens[a]["wallet"]) for a, n in zip(sueltos, editado["Tokens que añades"])}
+                                 "Añadir el 100 %": [True] * len(sueltos),
+                                 "O escribe cuántos tokens": [None] * len(sueltos)})
+            editado = st.data_editor(
+                base, hide_index=True, use_container_width=True, key="tokens_anadir",
+                disabled=["Proyecto", "Disponibles en tu wallet"],
+                column_config={
+                    "Disponibles en tu wallet": st.column_config.NumberColumn(format="%.2f"),
+                    "Añadir el 100 %": st.column_config.CheckboxColumn(),
+                    "O escribe cuántos tokens": st.column_config.NumberColumn(min_value=0.0, step=1.0,
+                                                                             format="%.2f")})
+            for a, todo, n in zip(sueltos, editado["Añadir el 100 %"], editado["O escribe cuántos tokens"]):
+                anadir[a] = tokens[a]["wallet"] if bool(todo) else min(_num(n), tokens[a]["wallet"])
         if anadir and any(v > 0 for v in anadir.values()):
             st.caption("Para usarlos de verdad, antes de pedir tendrías que depositarlos en RNT Lend.")
     for addr, t in tokens.items():
@@ -342,6 +350,8 @@ with st.spinner("Consultando el tipo de interés de RNT Lend…"):
     apr, fuente_apr = _tipo_interes(clave)
 
 res = calculo_lend.capacidad(garantias, deuda0, apr, T, nuevo)
+_valor_g = sum(g["valor_usd"] for g in res["activas"])
+ltv_medio = (sum(g["valor_usd"] * g["ltv"] for g in res["activas"]) / _valor_g) if _valor_g else 0.0
 maximo = res["maximo"]
 if res["vencidas"]:
     st.caption("No cuentan como garantía porque su fecha de fin ya ha pasado: "
@@ -455,13 +465,16 @@ st.markdown("**Cómo evoluciona tu deuda hasta el final** (con los intereses sum
 st.altair_chart(alt.layer(*capas).properties(height=320), use_container_width=True)
 
 if pct_hoy is not None:
-    texto = (f"Hoy tu deuda sería el **{es(pct_hoy)} %** de tu garantía (factor de salud {es(80 / pct_hoy, 2)}). "
-             f"Con los intereses va subiendo y el último día sería el **{es(pct_fin)} %** (factor de salud "
-             f"{es(80 / pct_fin, 2)}). Si llega al 80 %, se liquida.")
+    texto = (f"Al pedir este préstamo, tu deuda será el **{es(pct_hoy)} %** del valor de tu garantía (factor de "
+             f"salud {es(80 / pct_hoy, 2)}). Como los intereses se van sumando, ese porcentaje subirá hasta el "
+             f"**{es(pct_fin)} %** el último día (factor de salud {es(80 / pct_fin, 2)}). La liquidación se produce "
+             f"si llega al 80 %.")
     if antes:
-        texto += (" Los saltos son los inmuebles de tu garantía que terminan antes: "
-                  + ", ".join(f"{g['nombre']} ({g['fecha_fin'].strftime('%m/%Y')})" for g in antes)
-                  + ". Desde ese día dejan de contar como garantía.")
+        nombres = [f"{g['nombre']} ({mes_texto(g['fecha_fin'])})" for g in antes]
+        lista = nombres[0] if len(nombres) == 1 else ", ".join(nombres[:-1]) + " y " + nombres[-1]
+        texto += (f"\n\nLos saltos del gráfico se deben a que {lista} "
+                  f"{'terminan' if len(antes) > 1 else 'termina'} antes que {nombre_de(destino)}: a partir de "
+                  f"ese momento, {'dejan' if len(antes) > 1 else 'deja'} de contar como garantía.")
     st.markdown(texto)
 if pct_fin is not None and pct_fin > 76:
     st.warning("Con esta cantidad, el último día quedarías casi en el punto de liquidación: una bajada del valor de "
@@ -470,14 +483,16 @@ if pct_fin is not None and pct_fin > 76:
 # Qué limita la cantidad máxima
 lim = res["limita"]
 if lim["motivo"] == "hoy":
-    motivo = "lo que deja pedir hoy RNT Lend con tus garantías (el porcentaje máximo de cada inmueble)."
+    motivo = (f"Porque es lo máximo que RNT Lend permite pedir hoy con tu garantía: al pedir, solo deja llegar "
+              f"hasta el {es(ltv_medio * 100)} % de su valor.")
 elif lim["motivo"] == "fin_garantia":
-    motivo = (f"que {', '.join(lim['salen'])} termina antes que {nombre_de(destino)} y desde ese momento deja de "
-              f"contar como garantía.")
+    sale = " y ".join(lim["salen"])
+    motivo = (f"Porque cuando termine {sale} dejará de contar como garantía y, desde ese día, tu deuda llegaría al "
+              f"80 % de la garantía que te queda, que es el punto de liquidación.")
 else:
-    motivo = ("que, pidiendo esa cantidad, el último día tu deuda llegaría al 80 % de tu garantía, justo donde se "
-              "liquida (factor de salud 1).")
-st.markdown(f"**Por qué no puedes pedir más de {es(maximo)} $:** {motivo}")
+    motivo = ("Porque, con los intereses acumulados, el último día tu deuda llegaría al 80 % de tu garantía, que es "
+              "el punto de liquidación.")
+st.markdown(f"**¿Por qué no puedes pedir más de {es(maximo)} $?** {motivo}")
 
 with st.expander("Cómo se calcula"):
     st.markdown(
@@ -486,10 +501,11 @@ with st.expander("Cómo se calcula"):
         f"- **Intereses:** se suman a la deuda cada día y no se paga nada hasta el final.\n"
         f"- **Garantía:** el valor de tus tokens según RNT Lend, sin cambios en el tiempo. Si un inmueble termina "
         f"antes que el proyecto que compras, deja de contar ese día.\n"
-        f"- **Límite:** la deuda no pasa del 80 % de la garantía, donde se liquida (factor de salud 1). Además, hoy "
-        f"no se puede pedir más de lo que permite RNT Lend para cada inmueble.\n"
-        f"- **Lo que gana el proyecto:** con tu estatus ({estatus}): las rentas, que se reinvierten al cobrarlas al "
-        f"{es(TASA_REINVERSION.get(estatus, 11.0))} % anual (como en el simulador), y la venta al final.\n"
+        f"- **Límite:** la deuda nunca supera el 80 % del valor de tu garantía, que es donde se liquida (factor de "
+        f"salud 1). Además, en el momento de pedir, RNT Lend solo te deja llegar hasta el {es(ltv_medio * 100)} % del "
+        f"valor de tu garantía.\n"
+        f"- **¿Cuánto ganas?** Tu ganancia se calcula considerando tu estatus ({estatus}), la reinversión de las "
+        f"rentas que vas cobrando y el beneficio por la venta final del proyecto.\n"
         f"- Importes en dólares porque el préstamo es en USDT (1 € = {es(usd_por_eur, 4)} $).")
 st.caption("Simulación informativa con estimaciones: no es asesoramiento ni una oferta de préstamo, y no garantiza "
            "resultados. Revisa siempre tu factor de salud en RNT Lend.")
