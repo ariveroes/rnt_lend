@@ -33,6 +33,7 @@ import pandas as pd
 from modules import aave_lend, calculo_lend, data_loader, disponibles
 from modules.rentabilidad_compra import TASA_REINVERSION, ganancia_proyecto, rentabilidad_ajustada
 
+URL_AGENDA = "https://api.leadconnectorhq.com/widget/booking/kAzM5NH9hFxtc88sTQKy"   # la del simulador
 USDT_POLYGON = "0xc2132d05d31c914a87c6611c10748aeb04b58e8f"
 APR_DEFECTO = 0.10
 USD_POR_EUR_DEFECTO = 1.14
@@ -65,6 +66,16 @@ def _num(v, defecto=0.0):
         return defecto if x != x else x
     except (TypeError, ValueError):
         return defecto
+
+
+def dos(usd, signo=False):
+    """«5.546 $ · 4.781 €»: los importes se muestran en las dos divisas (el préstamo es en USDT)."""
+    s = ("+" if usd >= 0 else "−") if signo else ""
+    return (f"{s}{es(abs(usd))} $<span style='font-size:0.62em; color:{GRIS}; font-weight:700;'> · "
+            f"{s}{es(abs(usd) / USD_EUR[0])} €</span>")
+
+
+USD_EUR = [USD_POR_EUR_DEFECTO]      # se rellena con el tipo del día al cargar
 
 
 def tarjeta(titulo, valor, sub="", destacada=False, alto=False, color=None):
@@ -145,14 +156,16 @@ def _leer_wallet(wallet, clave, activos_lista):
 # ---------- Cabecera ----------
 st.markdown(f"<div style='font-size:34px; font-weight:800; color:{NAVY}; line-height:1.2;'>"
             f"Posición de mi cartera en RNT Lend</div>", unsafe_allow_html=True)
-st.caption("Revisa tu situación actual en RNT Lend o simula cuánta financiación extra podrías pedir usando tus "
-           "tokens como garantía, sin pagar nada hasta que termine el proyecto en el que inviertas.")
+st.caption("Revisa tu situación actual en RNT Lend y simula cuánta financiación extra podrías pedir usando tus "
+           "tokens como garantía, sin pagar nada hasta que termine el proyecto en el que inviertas. También puedes "
+           "crear tu propia cartera inmobiliaria para sacarle el mayor beneficio al RNT Lend.")
 
 clave = api_key()
 with st.spinner("Leyendo los proyectos y RNT Lend…"):
     df = data_loader.cargar_todos_proyectos()
     activos, precios = _pool(clave)
     usd_por_eur = _usd_por_eur()
+    USD_EUR[0] = usd_por_eur
 if df is None or df.empty or not activos:
     st.error("Ahora mismo no podemos leer los proyectos o RNT Lend. Prueba de nuevo en unos minutos.")
     st.stop()
@@ -217,9 +230,9 @@ if modo == "Con mi wallet":
     colateral = cuenta.get("colateral_usd", 0.0)
     hf = cuenta.get("health_factor")
     k1, k2, k3 = st.columns(3)
-    k1.markdown(tarjeta("¿Cuánto tengo ya aportado como garantía en RNT Lend?", f"{es(colateral)} $",
-                        f"≈ {es(colateral / usd_por_eur)} €", alto=True), unsafe_allow_html=True)
-    k2.markdown(tarjeta("¿A cuánto asciende mi deuda actualmente?", f"{es(deuda0)} $",
+    k1.markdown(tarjeta("¿Cuánto tengo ya aportado como garantía en RNT Lend?", dos(colateral),
+                        "Valor de tus tokens en garantía según RNT Lend", alto=True), unsafe_allow_html=True)
+    k2.markdown(tarjeta("¿A cuánto asciende mi deuda actualmente?", dos(deuda0),
                         "Lo que pediste más los intereses acumulados", alto=True), unsafe_allow_html=True)
     k3.markdown(tarjeta("¿Cuál es mi factor de salud?", es(hf, 2) if hf else "Sin deuda",
                         "Se liquida si baja de 1, es decir, cuando tu deuda llega al 80&nbsp;% de tu garantía."
@@ -251,37 +264,85 @@ if modo == "Con mi wallet":
         st.info("No hemos encontrado tokens de inmuebles en esta wallet.")
 else:
     st.markdown("## Tu cartera simulada")
-    st.caption("Indica cuánto invertirías en cada proyecto disponible hoy. Solo aparecen los que se pueden usar "
-               "como garantía en RNT Lend.")
+    c_div, c_imp_cart = st.columns([1, 2])
+    divisa_cli = c_div.radio("**¿En qué divisa quieres invertir?**", ["EUR", "USD"], horizontal=True,
+                             format_func=lambda d: "Euros (€)" if d == "EUR" else "Dólares ($)")
+    simb = "€" if divisa_cli == "EUR" else "$"
+    importe_cart = c_imp_cart.number_input(f"**¿Cuánto quieres invertir? ({simb})**", min_value=0.0, value=20000.0,
+                                           step=1000.0, format="%.0f")
+    st.markdown("**¿Qué estatus tienes o te gustaría tener?**")
+    estatus_cartera = st.selectbox("Estatus", ESTATUS, label_visibility="collapsed", key="estatus_cartera")
+    st.markdown(f"<div style='background:#fff4de; border-left:4px solid {AMBAR}; border-radius:8px; "
+                f"padding:10px 14px; color:{NAVY}; font-size:14px; margin:4px 0 12px;'>¿Quieres entender mejor "
+                f"cómo te beneficia cada estatus? <a href='{URL_AGENDA}' target='_blank' rel='noopener' "
+                f"style='color:{AMBAR_OSCURO}; font-weight:700;'>Agenda una llamada con nuestro equipo</a>.</div>",
+                unsafe_allow_html=True)
+
     opciones = sorted([a for a in comprables if sirve_de_garantia(a) and a in por_addr], key=nombre_de)
     if not opciones:
         st.info("Ahora mismo no hay proyectos disponibles que se puedan usar como garantía.")
         st.stop()
 
-    def _precio_txt(a):
-        r = por_addr[a]
-        return f"{es(comprables[a]['precio'], 2)} {'$' if str(r.get('Divisa', '')).upper() in ('USD', '$', 'USDT') else '€'}"
+    def _div(a):
+        return "USD" if str(por_addr[a].get("Divisa", "")).upper() in ("USD", "$", "USDT") else "EUR"
 
-    base = pd.DataFrame({"Proyecto": [nombre_de(a) for a in opciones],
-                         "Precio por token": [_precio_txt(a) for a in opciones],
-                         "Importe que invertirías (€)": [0.0] * len(opciones)})
-    editado = st.data_editor(base, hide_index=True, use_container_width=True, key="cartera_simulada",
-                             disabled=["Proyecto", "Precio por token"],
-                             column_config={"Importe que invertirías (€)": st.column_config.NumberColumn(
-                                 min_value=0.0, step=100.0, format="%.0f")})
-    total_eur = 0.0
-    for addr, imp in zip(opciones, editado["Importe que invertirías (€)"]):
-        imp = _num(imp)
-        if imp <= 0:
-            continue
-        total_eur += imp
-        r = por_addr[addr]
-        en_usd = str(r.get("Divisa", "")).upper() in ("USD", "$", "USDT")
-        importe = imp * usd_por_eur if en_usd else imp            # en la divisa del proyecto
-        garantias.append(garantia_de(addr, importe / comprables[addr]["precio"]))
-    if total_eur > 0:
-        st.caption(f"Cartera simulada: {es(total_eur)} € invertidos en {len(garantias)} "
-                   f"proyecto{'s' if len(garantias) != 1 else ''}.")
+    def _a_cliente(importe, desde):
+        """De la divisa de un proyecto a la del cliente."""
+        if desde == divisa_cli:
+            return importe
+        return importe * usd_por_eur if desde == "EUR" else importe / usd_por_eur
+
+    # Tabla para elegir proyectos, con la misma información que el simulador
+    filas_t = []
+    for a in opciones:
+        r = por_addr[a]
+        pr = comprables[a]["precio"]
+        ra = rentabilidad_ajustada(r, estatus_cartera, pr)       # con el precio y el momento de compra
+        txt_precio = f"{es(pr, 2)} {'$' if _div(a) == 'USD' else '€'}"
+        if _div(a) != divisa_cli:
+            txt_precio += f" (≈ {es(_a_cliente(pr, _div(a)), 2)} {simb})"
+        filas_t.append({"Elegir": False, "Proyecto": nombre_de(a), "Ubicación": str(r.get("Ubicación", "") or ""),
+                        "Precio por token": txt_precio,
+                        "Tipo de rendimiento": str(r.get("Tipología de Dividendo", "") or "—"),
+                        f"Rent. anualizada ({estatus_cartera})": f"{es(ra['anual'] or 0.0, 2)} %",
+                        f"Rent. total ({estatus_cartera})": f"{es(ra['total'] or 0.0, 2)} %"})
+    st.markdown("**Elige los proyectos de tu cartera**")
+    st.caption("Proyectos disponibles hoy que se pueden usar como garantía en RNT Lend. Rentabilidades estimadas con "
+               "tu estatus, según el precio y el momento de compra.")
+    elegidos_df = st.data_editor(
+        pd.DataFrame(filas_t), hide_index=True, use_container_width=True, key=f"elegir_{estatus_cartera}_{divisa_cli}",
+        disabled=[c for c in filas_t[0] if c != "Elegir"],
+        column_config={"Elegir": st.column_config.CheckboxColumn(width="small")})
+    elegidos = [a for a, m in zip(opciones, elegidos_df["Elegir"]) if bool(m)]
+
+    if elegidos and importe_cart > 0:
+        st.markdown("**¿Cómo quieres repartir tu inversión?**")
+        reparto = st.radio("Reparto", ["Por igual", "Por % de mi cartera"], horizontal=True,
+                           label_visibility="collapsed")
+        if reparto == "Por igual":
+            pesos = {a: 100.0 / len(elegidos) for a in elegidos}
+        else:
+            base_pct = pd.DataFrame({"Proyecto": [nombre_de(a) for a in elegidos],
+                                     "% de tu cartera": [round(100.0 / len(elegidos), 2)] * len(elegidos)})
+            pct_df = st.data_editor(base_pct, hide_index=True, use_container_width=True,
+                                    key=f"pct_{'_'.join(sorted(elegidos))}", disabled=["Proyecto"],
+                                    column_config={"% de tu cartera": st.column_config.NumberColumn(
+                                        min_value=0.0, max_value=100.0, step=1.0, format="%.2f %%")})
+            pesos = {a: _num(v) for a, v in zip(elegidos, pct_df["% de tu cartera"])}
+            suma = sum(pesos.values())
+            if abs(suma - 100) > 0.01:
+                st.warning(f"Los porcentajes suman {es(suma, 2)} %: tienen que sumar 100 %.")
+                st.stop()
+        resumen = []
+        for a in elegidos:
+            imp_cli = importe_cart * pesos[a] / 100                       # en la divisa del cliente
+            imp_proy = imp_cli if _div(a) == divisa_cli else (
+                imp_cli / usd_por_eur if divisa_cli == "USD" else imp_cli * usd_por_eur)
+            n_tok = imp_proy / comprables[a]["precio"]
+            garantias.append(garantia_de(a, n_tok))
+            resumen.append(f"{nombre_de(a)}: {es(imp_cli)} {simb} ({es(n_tok, 1)} tokens)")
+        st.caption("Tu cartera: " + " · ".join(resumen))
+    estatus_fijado = estatus_cartera
 
 # ---------- Bloque 2: simula una financiación extra ----------
 st.markdown("## Simula una financiación extra")
@@ -347,11 +408,13 @@ if modo == "Con mi wallet":
 
 detectado = ("SuperReentel" if rnt_estatus >= RNT_POR_ESTATUS["SuperReentel"]
              else "ReentelPro" if rnt_estatus >= RNT_POR_ESTATUS["ReentelPro"] else "Reentel")
-st.markdown("**Tu estatus**")
-estatus = st.selectbox(
-    "Tu estatus", ESTATUS, index=ESTATUS.index(detectado), label_visibility="collapsed",
-    help=("Lo hemos detectado por los RNT que tienes en estatus en tu wallet; cámbialo si no es correcto."
-          if modo == "Con mi wallet" else "Cambia la rentabilidad del proyecto y la de lo que reinviertes."))
+if modo == "Con mi wallet":
+    st.markdown("**Tu estatus**")
+    estatus = st.selectbox(
+        "Tu estatus", ESTATUS, index=ESTATUS.index(detectado), label_visibility="collapsed",
+        help="Lo hemos detectado por los RNT que tienes en estatus en tu wallet; cámbialo si no es correcto.")
+else:
+    estatus = estatus_fijado
 st.markdown("**¿En qué proyecto quieres invertir?**")
 candidatos = [a for a in comprables if a in por_addr and meses_hasta(por_addr[a].get("fecha_fin_calculo"))]
 candidatos.sort(key=lambda a: (comprables[a]["origen"] != "Financiación", nombre_de(a)))
@@ -386,7 +449,7 @@ nuevo = {"garantia": False, "ltv": cfg_nuevo.get("ltv", 0.0), "umbral": cfg_nuev
 # ---------- Resultado ----------
 st.markdown("### ¿Cuánto puedes pedir?")
 if not garantias:
-    st.info("Indica arriba cuánto invertirías para calcularlo." if modo != "Con mi wallet"
+    st.info("Elige arriba los proyectos de tu cartera para calcularlo." if modo != "Con mi wallet"
             else "Para simularlo necesitas tokens que sirvan de garantía.")
     st.stop()
 with st.spinner("Consultando el tipo de interés de RNT Lend…"):
@@ -413,8 +476,8 @@ if maximo < 50:
         st.warning("Con estos inmuebles no se puede pedir una cantidad suficiente hasta el final de este proyecto.")
     st.stop()
 
-st.markdown(tarjeta("Puedes pedir hasta", f"{es(maximo)} $",
-                    f"≈ {es(maximo / usd_por_eur)} € · y no pagar nada hasta {mes_texto(fin_destino)}, "
+st.markdown(tarjeta("Puedes pedir hasta", dos(maximo),
+                    f"y no pagar nada hasta {mes_texto(fin_destino)}, "
                     f"cuando termina {nombre_de(destino)}", True), unsafe_allow_html=True)
 st.write("")
 # Cantidad a pedir: una caja grande donde escribirla y atajos al 50 %, 75 % y máximo
@@ -439,7 +502,8 @@ st.markdown(f"""
 </style>""", unsafe_allow_html=True)
 st.markdown(f"<div style='font-size:22px; font-weight:800; color:{NAVY}; margin-top:6px;'>"
             f"¿Cuánto quieres pedir?</div><div style='color:{GRIS}; font-size:14px; margin-bottom:6px;'>"
-            f"Escribe la cantidad en dólares (como máximo {es(tope)} $) o elige una opción.</div>",
+            f"Escribe la cantidad en dólares (como máximo {es(tope)} $ · {es(tope / usd_por_eur)} €) o elige una "
+            f"opción. El préstamo es en USDT.</div>",
             unsafe_allow_html=True)
 c_imp, c_b1, c_b2, c_b3 = st.columns([2.2, 1, 1, 1], vertical_alignment="center")
 prestamo = c_imp.number_input("Cantidad en $", min_value=0, max_value=tope, step=100, key="importe_pedir",
@@ -460,13 +524,14 @@ ganancia = ganancia_proyecto(prestamo, fila_plazo, estatus, precio, T)
 neto = ganancia - interes
 t1, t2, t3 = st.columns(3)
 t1.markdown(tarjeta("Con lo que pides compras", f"{es(tokens_compra, 1)} tokens",
-                    f"de {nombre_de(destino)} ({es(prestamo)} $)"), unsafe_allow_html=True)
-t2.markdown(tarjeta("Al final devuelves", f"{es(devolver)} $",
+                    f"de {nombre_de(destino)} ({es(prestamo)} $ · {es(prestamo / usd_por_eur)} €)"),
+            unsafe_allow_html=True)
+t2.markdown(tarjeta("Al final devuelves", dos(devolver),
                     f"{es(prestamo)} $ del préstamo + {es(interes)} $ de intereses ({es(apr * 100, 1)} % anual)"),
             unsafe_allow_html=True)
-t3.markdown(tarjeta("Ganas de más", f"{'+' if neto >= 0 else '−'}{es(abs(neto))} $",
-                    f"lo que gana el proyecto con tu estatus (~{es(ganancia)} $) menos los intereses", neto > 0),
-            unsafe_allow_html=True)
+t3.markdown(tarjeta("Ganas de más", dos(neto, signo=True),
+                    f"lo que gana el proyecto con tu estatus (~{es(ganancia)} $ · {es(ganancia / usd_por_eur)} €) "
+                    f"menos los intereses", neto > 0), unsafe_allow_html=True)
 if neto <= 0 and prestamo > 0:
     st.info(f"Con tu estatus ({estatus}) y {nombre_de(destino)}, ahora mismo no te compensa pedir financiación: "
             f"hasta {mes_texto(fin_destino)} los intereses suman un {es(interes / prestamo * 100)} % de lo que pides "
@@ -541,7 +606,7 @@ elif lim["motivo"] == "fin_garantia":
 else:
     motivo = ("Porque, con los intereses acumulados, el último día tu deuda llegaría al 80 % de tu garantía, que es "
               "el punto de liquidación.")
-st.markdown(f"**¿Por qué no puedes pedir más de {es(maximo)} $?** {motivo}")
+st.markdown(f"**¿Por qué no puedes pedir más de {es(maximo)} $ ({es(maximo / usd_por_eur)} €)?** {motivo}")
 
 with st.expander("Cómo se calcula"):
     st.markdown(
