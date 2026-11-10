@@ -264,12 +264,30 @@ else:
 # ---------- Bloque 2: simula una financiación extra ----------
 st.markdown("## Simula una financiación extra")
 if modo == "Con mi wallet":
-    sueltos = {a: t for a, t in tokens.items() if t["wallet"] > 0.0001 and sirve_de_garantia(a)}
-    usar_sueltos = bool(sueltos) and st.checkbox(
-        "Contar los tokens adicionales que puedes añadir como garantía (tendrías que depositarlos en RNT Lend)",
-        value=True)
+    def _cuenta(addr):
+        m = meses_hasta(por_addr[addr].get("fecha_fin_calculo")) if addr in por_addr else None
+        return sirve_de_garantia(addr) and not (m is not None and m <= 0)
+
+    sueltos = [a for a, t in tokens.items() if t["wallet"] > 0.0001 and _cuenta(a)]
+    anadir = {}
+    if sueltos:
+        opcion = st.radio("¿Quieres considerar los tokens adicionales que tienes en la wallet para aumentar tu "
+                          "garantía?", ["Sí, todos (100 %)", "Sí, escribo cuántos", "No"], horizontal=True)
+        if opcion == "Sí, todos (100 %)":
+            anadir = {a: tokens[a]["wallet"] for a in sueltos}
+        elif opcion == "Sí, escribo cuántos":
+            base = pd.DataFrame({"Proyecto": [nombre_de(a) for a in sueltos],
+                                 "Disponibles en tu wallet": [round(tokens[a]["wallet"], 2) for a in sueltos],
+                                 "Tokens que añades": [round(tokens[a]["wallet"], 2) for a in sueltos]})
+            editado = st.data_editor(base, hide_index=True, use_container_width=True, key="tokens_anadir",
+                                     disabled=["Proyecto", "Disponibles en tu wallet"],
+                                     column_config={"Tokens que añades": st.column_config.NumberColumn(
+                                         min_value=0.0, step=1.0)})
+            anadir = {a: min(_num(n), tokens[a]["wallet"]) for a, n in zip(sueltos, editado["Tokens que añades"])}
+        if anadir and any(v > 0 for v in anadir.values()):
+            st.caption("Para usarlos de verdad, antes de pedir tendrías que depositarlos en RNT Lend.")
     for addr, t in tokens.items():
-        n = t["garantia"] + (t["wallet"] if usar_sueltos else 0.0)
+        n = t["garantia"] + anadir.get(addr, 0.0)
         if sirve_de_garantia(addr) and n > 0:
             garantias.append(garantia_de(addr, n))
 
@@ -403,33 +421,57 @@ if neto <= 0 and prestamo > 0:
 # Gráfico: deuda sobre garantía hasta el final
 puntos = calculo_lend.evolucion(garantias, deuda0, prestamo, apr, T, nuevo)
 hoy = pd.Timestamp(date.today())
-datos_g = pd.DataFrame([{"Fecha": hoy + pd.Timedelta(days=m * 30.4375), "Deuda sobre garantía (%)": p}
-                        for m, p, _, _ in puntos if p is not None])
-lineas = pd.DataFrame([{"y": 80.0, "Línea": "Liquidación (80 %)"}])
-graf = alt.Chart(datos_g).mark_line(color=NAVY, strokeWidth=3).encode(
-    x=alt.X("Fecha:T", title=None, axis=alt.Axis(format="%m/%Y")),
-    y=alt.Y("Deuda sobre garantía (%):Q", title="Deuda sobre garantía (%)", scale=alt.Scale(domain=[0, 90])),
-    tooltip=[alt.Tooltip("Fecha:T", format="%m/%Y"),
-             alt.Tooltip("Deuda sobre garantía (%):Q", format=".1f")])
-reglas = alt.Chart(lineas).mark_rule(strokeDash=[6, 4], strokeWidth=2).encode(
-    y=alt.Y("y:Q", title="Deuda sobre garantía (%)"),
-    color=alt.Color("Línea:N", legend=alt.Legend(orient="bottom", title=None),
-                    scale=alt.Scale(domain=["Liquidación (80 %)"], range=[ROJO])))
+fecha_de = lambda m: hoy + pd.Timedelta(days=m * 30.4375)
+datos_g = pd.DataFrame([{"Fecha": fecha_de(m), "Deuda": p} for m, p, _, _ in puntos if p is not None])
+pct_hoy = datos_g["Deuda"].iloc[0] if len(datos_g) else None
+pct_fin = datos_g["Deuda"].iloc[-1] if len(datos_g) else None
+antes = sorted([g for g in res["activas"] if g.get("meses_fin") is not None and g["meses_fin"] < T],
+               key=lambda g: g["meses_fin"])
+
+eje_x = alt.X("Fecha:T", title=None, axis=alt.Axis(format="%m/%Y", tickCount=8, labelAngle=0, grid=False))
+base_g = alt.Chart(datos_g).encode(x=eje_x)
+area = base_g.mark_area(color=AMBAR, opacity=0.18).encode(
+    y=alt.Y("Deuda:Q", title="Deuda sobre garantía (%)", scale=alt.Scale(domain=[0, 95])))
+linea = base_g.mark_line(color=NAVY, strokeWidth=3).encode(
+    y="Deuda:Q", tooltip=[alt.Tooltip("Fecha:T", format="%m/%Y", title="Fecha"),
+                          alt.Tooltip("Deuda:Q", format=".1f", title="Deuda sobre garantía (%)")])
+liquidacion = alt.Chart(pd.DataFrame({"y": [80.0]})).mark_rule(color=ROJO, strokeDash=[6, 4], strokeWidth=2).encode(y="y:Q")
+txt_liq = alt.Chart(pd.DataFrame({"x": [datos_g["Fecha"].iloc[0]], "y": [80.0],
+                                  "t": ["Liquidación: 80 %"]})).mark_text(
+    color=ROJO, align="left", dx=4, dy=-8, fontSize=12, fontWeight="bold").encode(x="x:T", y="y:Q", text="t:N")
+extremos = pd.DataFrame([{"Fecha": datos_g["Fecha"].iloc[0], "Deuda": pct_hoy, "t": f"Hoy: {es(pct_hoy)} %",
+                          "a": "left"},
+                         {"Fecha": datos_g["Fecha"].iloc[-1], "Deuda": pct_fin, "t": f"Final: {es(pct_fin)} %",
+                          "a": "right"}])
+puntos_ext = alt.Chart(extremos).mark_point(color=NAVY, filled=True, size=70).encode(x="Fecha:T", y="Deuda:Q")
+txt_ini = alt.Chart(extremos.iloc[:1]).mark_text(color=NAVY, align="left", dx=6, dy=-12, fontSize=13,
+                                                 fontWeight="bold").encode(x="Fecha:T", y="Deuda:Q", text="t:N")
+txt_fin = alt.Chart(extremos.iloc[1:]).mark_text(color=NAVY, align="right", dx=-6, dy=-12, fontSize=13,
+                                                 fontWeight="bold").encode(x="Fecha:T", y="Deuda:Q", text="t:N")
+capas = [area, linea, liquidacion, txt_liq, puntos_ext, txt_ini, txt_fin]
+if antes:
+    eventos = pd.DataFrame([{"Fecha": fecha_de(g["meses_fin"]), "t": f"Termina {g['nombre']}"} for g in antes])
+    capas.append(alt.Chart(eventos).mark_rule(color=GRIS, strokeDash=[2, 3]).encode(x="Fecha:T"))
+    capas.append(alt.Chart(eventos).mark_text(color=GRIS, align="right", dx=-4, y=12, fontSize=11).encode(
+        x="Fecha:T", text="t:N"))
 st.write("")
 st.markdown("**Cómo evoluciona tu deuda hasta el final** (con los intereses sumados, sin pagar nada)")
-st.altair_chart((graf + reglas).properties(height=300), use_container_width=True)
-pct_hoy = next((p for _, p, _, _ in puntos if p is not None), None)
-pct_fin = next((p for _, p, _, _ in reversed(puntos) if p is not None), None)
-if pct_hoy is not None and pct_fin is not None:
-    st.caption(f"La línea es tu deuda comparada con el valor de tu garantía. Al pedir, tu deuda es el "
-               f"{es(pct_hoy)} % de tu garantía (factor de salud {es(80 / pct_hoy, 2)}); con los intereses va subiendo "
-               f"hasta el {es(pct_fin)} % el último día (factor de salud {es(80 / pct_fin, 2)}). Si la línea toca la "
-               f"roja, se liquida. Los saltos son inmuebles de tu garantía que terminan y dejan de contar.")
+st.altair_chart(alt.layer(*capas).properties(height=320), use_container_width=True)
+
+if pct_hoy is not None:
+    texto = (f"Hoy tu deuda sería el **{es(pct_hoy)} %** de tu garantía (factor de salud {es(80 / pct_hoy, 2)}). "
+             f"Con los intereses va subiendo y el último día sería el **{es(pct_fin)} %** (factor de salud "
+             f"{es(80 / pct_fin, 2)}). Si llega al 80 %, se liquida.")
+    if antes:
+        texto += (" Los saltos son los inmuebles de tu garantía que terminan antes: "
+                  + ", ".join(f"{g['nombre']} ({g['fecha_fin'].strftime('%m/%Y')})" for g in antes)
+                  + ". Desde ese día dejan de contar como garantía.")
+    st.markdown(texto)
 if pct_fin is not None and pct_fin > 76:
     st.warning("Con esta cantidad, el último día quedarías casi en el punto de liquidación: una bajada del valor de "
                "tu garantía o una subida del tipo de interés te liquidaría. Pide menos para tener margen.")
 
-# Qué limita la cantidad
+# Qué limita la cantidad máxima
 lim = res["limita"]
 if lim["motivo"] == "hoy":
     motivo = "lo que deja pedir hoy RNT Lend con tus garantías (el porcentaje máximo de cada inmueble)."
@@ -437,14 +479,9 @@ elif lim["motivo"] == "fin_garantia":
     motivo = (f"que {', '.join(lim['salen'])} termina antes que {nombre_de(destino)} y desde ese momento deja de "
               f"contar como garantía.")
 else:
-    motivo = ("que, con los intereses, tu deuda llegue al 80 % de tu garantía el último día, justo donde se "
+    motivo = ("que, pidiendo esa cantidad, el último día tu deuda llegaría al 80 % de tu garantía, justo donde se "
               "liquida (factor de salud 1).")
-st.markdown(f"**Qué marca el máximo:** {motivo}")
-antes = [g for g in res["activas"] if g.get("meses_fin") is not None and g["meses_fin"] < T]
-if antes:
-    st.markdown("**Ojo:** " + ", ".join(f"{g['nombre']} ({g['fecha_fin'].strftime('%m/%Y')})" for g in antes)
-                + f" termina{'n' if len(antes) > 1 else ''} antes. Cuando terminen dejarán de contar como "
-                  "garantía; el cálculo ya lo tiene en cuenta.")
+st.markdown(f"**Por qué no puedes pedir más de {es(maximo)} $:** {motivo}")
 
 with st.expander("Cómo se calcula"):
     st.markdown(
