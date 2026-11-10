@@ -1,3 +1,4 @@
+
 """
 El maestro de inmuebles, leído una sola vez para toda la herramienta.
 
@@ -29,6 +30,9 @@ COLUMNAS = {
     "nombre":                ("Nombre del proyecto", 1),
     "estado":                ("ESTADO", 2),
     "lanzamiento":           ("LANZAMIENTO", 3),
+    # Columna F: fecha de fin estimada contando desde el lanzamiento. Se usa solo
+    # cuando el proyecto no tiene ninguna otra fecha de fin.
+    "fecha_fin_lanzamiento": ("Estimación fecha fin desde Lanzamiento", 5),
     "fecha_financiacion":    ("Fecha de Financiación", 6),
     "fecha_inicio_renta":    ("Estimación fecha Inicio de Proyecto desde Financiación", 7),
     "fecha_fin_estimada":    ("Estimación fecha fin desde Financiación", 8),
@@ -272,13 +276,15 @@ def proyectos() -> list:
                       "descripcion", "link_web", "motivo_cierre", "dossier", "whitepaper"):
             p[clave] = texto(_valor(row, cabeceras, clave))
         
-        for clave in ("lanzamiento", "fecha_financiacion", "fecha_inicio_renta",
+        for clave in ("lanzamiento", "fecha_fin_lanzamiento", "fecha_financiacion", "fecha_inicio_renta",
                       "fecha_fin_estimada", "fecha_fin_real", "fecha_fin_auxiliar"):
             p[clave] = fecha(_valor(row, cabeceras, clave))
         # Fecha en la que termina el proyecto, con la misma prioridad que la
-        # plantilla de propuestas: la auxiliar (CA), la real y, si no, la estimada.
+        # plantilla de propuestas: la auxiliar (CA), la real y, si no, la estimada
+        # desde financiación (I). Solo si no hay ninguna de esas, la estimada desde
+        # el lanzamiento (F), p. ej. proyectos que aún no tienen fecha de financiación.
         p["fecha_fin_calculo"] = (p["fecha_fin_auxiliar"] or p["fecha_fin_real"]
-                                  or p["fecha_fin_estimada"])
+                                  or p["fecha_fin_estimada"] or p["fecha_fin_lanzamiento"])
         
         for clave in COLUMNAS:
             if clave.startswith(("est_", "real_")):
