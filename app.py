@@ -182,6 +182,13 @@ def nombre_de(addr):
     return str(r.get("Nombre del proyecto")) if r is not None else addr[:10] + "…"
 
 
+def dossier_de(addr):
+    """Enlace al dossier comercial del proyecto (columna «Link a Dossier Comercial» del Master) o None."""
+    r = por_addr.get(addr)
+    url = str(r.get("dossier", "") or "").strip() if r is not None else ""
+    return url if url.lower().startswith("http") else None
+
+
 def sirve_de_garantia(addr):
     cfg = activos.get(addr) or {}
     return cfg.get("ltv", 0) > 0 and cfg.get("activa", True) and not cfg.get("congelada", False)
@@ -305,14 +312,16 @@ else:
                         "Precio por token": txt_precio,
                         "Tipo de rendimiento": str(r.get("Tipología de Dividendo", "") or "—"),
                         f"Rent. anualizada ({estatus_cartera})": f"{es(ra['anual'] or 0.0, 2)} %",
-                        f"Rent. total ({estatus_cartera})": f"{es(ra['total'] or 0.0, 2)} %"})
+                        f"Rent. total ({estatus_cartera})": f"{es(ra['total'] or 0.0, 2)} %",
+                        "Dossier": dossier_de(a)})
     st.markdown("**Elige los proyectos de tu cartera**")
     st.caption("Proyectos disponibles hoy que se pueden usar como garantía en RNT Lend. Rentabilidades estimadas con "
                "tu estatus, según el precio y el momento de compra.")
     elegidos_df = st.data_editor(
         pd.DataFrame(filas_t), hide_index=True, use_container_width=True, key=f"elegir_{estatus_cartera}_{divisa_cli}",
         disabled=[c for c in filas_t[0] if c != "Elegir"],
-        column_config={"Elegir": st.column_config.CheckboxColumn(width="small")})
+        column_config={"Elegir": st.column_config.CheckboxColumn(width="small"),
+                       "Dossier": st.column_config.LinkColumn(display_text="Dossier", width="small")})
     elegidos = [a for a, m in zip(opciones, elegidos_df["Elegir"]) if bool(m)]
 
     if elegidos and importe_cart > 0:
@@ -439,7 +448,8 @@ st.caption(f"Termina en {mes_texto(fin_destino)} (unos {es(T)} meses) · precio 
            f"{es(precio, 2)} {'€' if divisa == 'EUR' else '$'}"
            f"{' (precio de mercado)' if comprables[destino]['origen'] == 'Mercado' else ''}"
            f" · rentabilidad total estimada con {estatus}: "
-           f"{es(rent['total'], 1)} %")
+           f"{es(rent['total'], 1)} %"
+           + (f" · [Dossier]({dossier_de(destino)})" if dossier_de(destino) else ""))
 # Los tokens que se compran con el préstamo NO cuentan como garantía (sin «bucles» de pedir, comprar,
 # depositar y volver a pedir)
 cfg_nuevo = activos.get(destino) or {}
