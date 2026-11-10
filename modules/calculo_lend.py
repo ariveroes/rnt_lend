@@ -14,8 +14,8 @@ SUPUESTOS
 - Al pedir el préstamo, además, el protocolo no deja superar el LTV de cada activo.
 - Si un inmueble de la garantía termina antes que el proyecto que se compra, desde
   ese día deja de contar como garantía (sus tokens desaparecen).
-- Si el proyecto que se compra se puede usar como garantía, sus tokens también
-  cuentan (se pide en varias vueltas: pides, compras, depositas y vuelves a pedir).
+- Los tokens que se compran con el préstamo no cuentan como garantía (la app pasa
+  nuevo["garantia"] = False; la función lo admite por si algún día se quiere).
 
 Todo en dólares (el préstamo es en USDT).
 """
