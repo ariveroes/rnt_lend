@@ -280,17 +280,32 @@ if modo == "Con mi wallet":
                        "cuántos quieres aportar.")
             col_escribe = (f"O escribe cuántos tokens (máximo {es(tokens[sueltos[0]]['wallet'], 2)})"
                            if len(sueltos) == 1 else "O escribe cuántos tokens (máximo: los disponibles)")
+            # Valores de partida de la tabla. Se guardan para poder rehacerla (con otra clave) cuando alguien
+            # escribe una cantidad con «Añadir el 100 %» marcado: así esa cantidad desaparece al momento.
+            if st.session_state.get("anadir_para") != tuple(sueltos):
+                st.session_state.anadir_para = tuple(sueltos)
+                st.session_state.anadir_vals = {a: (True, 0.0) for a in sueltos}
+                st.session_state.anadir_ver = st.session_state.get("anadir_ver", 0) + 1
+            vals = st.session_state.anadir_vals
             base = pd.DataFrame({"Proyecto": [nombre_de(a) for a in sueltos],
                                  "Disponibles en tu wallet": [round(tokens[a]["wallet"], 2) for a in sueltos],
-                                 "Añadir el 100 %": [True] * len(sueltos),
-                                 col_escribe: [None] * len(sueltos)})
+                                 "Añadir el 100 %": [vals[a][0] for a in sueltos],
+                                 col_escribe: [vals[a][1] for a in sueltos]})
             editado = st.data_editor(
-                base, hide_index=True, use_container_width=True, key="tokens_anadir",
+                base, hide_index=True, use_container_width=True, key=f"tokens_anadir_{st.session_state.anadir_ver}",
                 disabled=["Proyecto", "Disponibles en tu wallet"],
                 column_config={
                     "Disponibles en tu wallet": st.column_config.NumberColumn(format="%.2f"),
                     "Añadir el 100 %": st.column_config.CheckboxColumn(),
-                    col_escribe: st.column_config.NumberColumn(min_value=0.0, step=1.0, format="%.2f")})
+                    col_escribe: st.column_config.NumberColumn(
+                        min_value=0.0, step=1.0, format="%.2f",
+                        help="Solo si desmarcas «Añadir el 100 %»")})
+            nuevos = {a: (bool(todo), 0.0 if bool(todo) else _num(n))
+                      for a, todo, n in zip(sueltos, editado["Añadir el 100 %"], editado[col_escribe])}
+            if any(bool(t) and _num(n) > 0 for t, n in zip(editado["Añadir el 100 %"], editado[col_escribe])):
+                st.session_state.anadir_vals = nuevos
+                st.session_state.anadir_ver += 1
+                st.rerun()
             excedidos = []
             for a, todo, n in zip(sueltos, editado["Añadir el 100 %"], editado[col_escribe]):
                 disp = tokens[a]["wallet"]
@@ -302,7 +317,7 @@ if modo == "Con mi wallet":
                     anadir[a] = min(_num(n), disp)
             for a in excedidos:
                 st.warning(f"En {nombre_de(a)} puedes añadir como máximo {es(tokens[a]['wallet'], 2)} tokens como "
-                           f"garantía, que son los que tienes disponibles. Usamos esa cantidad en el cálculo.")
+                           f"garantía, que son los que tienes disponibles.")
     for addr, t in tokens.items():
         n = t["garantia"] + anadir.get(addr, 0.0)
         if sirve_de_garantia(addr) and n > 0:
