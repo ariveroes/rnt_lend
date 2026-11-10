@@ -271,11 +271,11 @@ if modo == "Con mi wallet":
     sueltos = [a for a, t in tokens.items() if t["wallet"] > 0.0001 and _cuenta(a)]
     anadir = {}
     if sueltos:
-        opcion = st.radio("¿Quieres considerar los tokens adicionales que tienes en la wallet para aumentar tu "
-                          "garantía?", ["Sí, todos (100 %)", "Sí, escribo cuántos", "No"], horizontal=True)
-        if opcion == "Sí, todos (100 %)":
-            anadir = {a: tokens[a]["wallet"] for a in sueltos}
-        elif opcion == "Sí, escribo cuántos":
+        st.markdown("**¿Quieres considerar los tokens adicionales que tienes en la wallet para aumentar tu "
+                    "garantía?**")
+        opcion = st.radio("Tokens adicionales", ["Sí (indica a continuación cuánto quieres aportar como garantía adicional)", "No"],
+                          label_visibility="collapsed")
+        if opcion.startswith("Sí"):
             base = pd.DataFrame({"Proyecto": [nombre_de(a) for a in sueltos],
                                  "Disponibles en tu wallet": [round(tokens[a]["wallet"], 2) for a in sueltos],
                                  "Tokens que añades": [round(tokens[a]["wallet"], 2) for a in sueltos]})
@@ -293,8 +293,9 @@ if modo == "Con mi wallet":
 
 detectado = ("SuperReentel" if rnt_estatus >= RNT_POR_ESTATUS["SuperReentel"]
              else "ReentelPro" if rnt_estatus >= RNT_POR_ESTATUS["ReentelPro"] else "Reentel")
+st.markdown("**Tu estatus**")
 estatus = st.selectbox(
-    "Tu estatus", ESTATUS, index=ESTATUS.index(detectado),
+    "Tu estatus", ESTATUS, index=ESTATUS.index(detectado), label_visibility="collapsed",
     help=("Lo hemos detectado por los RNT que tienes en estatus en tu wallet; cámbialo si no es correcto."
           if modo == "Con mi wallet" else "Cambia la rentabilidad del proyecto y la de lo que reinviertes."))
 st.markdown("**¿En qué proyecto quieres invertir?**")
@@ -322,18 +323,13 @@ divisa = "USD" if str(fila.get("Divisa", "EUR")).upper() in ("USD", "$", "USDT")
 precio = _num(fila.get("Precio Emisión"), 100.0)
 precio_usd = precio * (usd_por_eur if divisa == "EUR" else 1.0)
 rent = rentabilidad_ajustada(fila, estatus)
-nuevo_garantia = sirve_de_garantia(destino)
 st.caption(f"Termina en {mes_texto(fin_destino)} (unos {es(T)} meses) · precio por token "
            f"{es(precio, 2)} {'€' if divisa == 'EUR' else '$'} · rentabilidad total estimada "
-           f"{es(rent['total'], 1)} % · " + ("se puede usar como garantía" if nuevo_garantia
-                                             else "no se puede usar como garantía"))
-usar_nuevo = False
-if nuevo_garantia:
-    usar_nuevo = st.checkbox("Usar también como garantía los tokens que compres con el préstamo", value=True,
-                             help="Se pide en varias vueltas: pides, compras, depositas los tokens nuevos "
-                                  "y vuelves a pedir. Así puedes pedir más.")
+           f"{es(rent['total'], 1)} %")
+# Los tokens que se compran con el préstamo NO cuentan como garantía (sin «bucles» de pedir, comprar,
+# depositar y volver a pedir)
 cfg_nuevo = activos.get(destino) or {}
-nuevo = {"garantia": usar_nuevo, "ltv": cfg_nuevo.get("ltv", 0.0), "umbral": cfg_nuevo.get("umbral", 0.0),
+nuevo = {"garantia": False, "ltv": cfg_nuevo.get("ltv", 0.0), "umbral": cfg_nuevo.get("umbral", 0.0),
          "ratio": (precios.get(destino, precio_usd) / precio_usd) if precio_usd > 0 else 1.0}
 
 # ---------- Resultado ----------
