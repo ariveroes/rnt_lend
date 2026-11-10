@@ -278,22 +278,31 @@ if modo == "Con mi wallet":
         if opcion.startswith("Sí"):
             st.caption("Marca «Añadir el 100 %» para aportar todos los tokens disponibles, o desmárcalo y escribe "
                        "cuántos quieres aportar.")
+            col_escribe = (f"O escribe cuántos tokens (máximo {es(tokens[sueltos[0]]['wallet'], 2)})"
+                           if len(sueltos) == 1 else "O escribe cuántos tokens (máximo: los disponibles)")
             base = pd.DataFrame({"Proyecto": [nombre_de(a) for a in sueltos],
                                  "Disponibles en tu wallet": [round(tokens[a]["wallet"], 2) for a in sueltos],
                                  "Añadir el 100 %": [True] * len(sueltos),
-                                 "O escribe cuántos tokens": [None] * len(sueltos)})
+                                 col_escribe: [None] * len(sueltos)})
             editado = st.data_editor(
                 base, hide_index=True, use_container_width=True, key="tokens_anadir",
                 disabled=["Proyecto", "Disponibles en tu wallet"],
                 column_config={
                     "Disponibles en tu wallet": st.column_config.NumberColumn(format="%.2f"),
                     "Añadir el 100 %": st.column_config.CheckboxColumn(),
-                    "O escribe cuántos tokens": st.column_config.NumberColumn(min_value=0.0, step=1.0,
-                                                                             format="%.2f")})
-            for a, todo, n in zip(sueltos, editado["Añadir el 100 %"], editado["O escribe cuántos tokens"]):
-                anadir[a] = tokens[a]["wallet"] if bool(todo) else min(_num(n), tokens[a]["wallet"])
-        if anadir and any(v > 0 for v in anadir.values()):
-            st.caption("Para usarlos de verdad, antes de pedir tendrías que depositarlos en RNT Lend.")
+                    col_escribe: st.column_config.NumberColumn(min_value=0.0, step=1.0, format="%.2f")})
+            excedidos = []
+            for a, todo, n in zip(sueltos, editado["Añadir el 100 %"], editado[col_escribe]):
+                disp = tokens[a]["wallet"]
+                if bool(todo):
+                    anadir[a] = disp
+                else:
+                    if _num(n) > disp + 1e-9:
+                        excedidos.append(a)
+                    anadir[a] = min(_num(n), disp)
+            for a in excedidos:
+                st.warning(f"En {nombre_de(a)} puedes añadir como máximo {es(tokens[a]['wallet'], 2)} tokens como "
+                           f"garantía, que son los que tienes disponibles. Usamos esa cantidad en el cálculo.")
     for addr, t in tokens.items():
         n = t["garantia"] + anadir.get(addr, 0.0)
         if sirve_de_garantia(addr) and n > 0:
@@ -332,7 +341,7 @@ precio = _num(fila.get("Precio Emisión"), 100.0)
 precio_usd = precio * (usd_por_eur if divisa == "EUR" else 1.0)
 rent = rentabilidad_ajustada(fila, estatus)
 st.caption(f"Termina en {mes_texto(fin_destino)} (unos {es(T)} meses) · precio por token "
-           f"{es(precio, 2)} {'€' if divisa == 'EUR' else '$'} · rentabilidad total estimada "
+           f"{es(precio, 2)} {'€' if divisa == 'EUR' else '$'} · rentabilidad total estimada con {estatus}: "
            f"{es(rent['total'], 1)} %")
 # Los tokens que se compran con el préstamo NO cuentan como garantía (sin «bucles» de pedir, comprar,
 # depositar y volver a pedir)
