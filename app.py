@@ -30,7 +30,7 @@ if _DIR_MODULES not in sys.path:          # los módulos de la cadena se importa
 import altair as alt
 import pandas as pd
 
-from modules import aave_lend, calculo_lend, data_loader
+from modules import aave_lend, calculo_lend, data_loader, disponibles
 from modules.rentabilidad_compra import TASA_REINVERSION, ganancia_proyecto, rentabilidad_ajustada
 
 USDT_POLYGON = "0xc2132d05d31c914a87c6611c10748aeb04b58e8f"
@@ -159,6 +159,9 @@ if df is None or df.empty or not activos:
 
 por_addr = {str(r.get("Token Address", "") or "").strip().lower(): r for _, r in df.iterrows()
             if str(r.get("Token Address", "") or "").startswith("0x")}
+# Lo que se puede comprar hoy y a qué precio: la misma lista que el Paso 3 del simulador
+with st.spinner("Revisando los proyectos disponibles…"):
+    comprables, error_otc = disponibles.comprables(df, clave, usd_por_eur)
 
 
 def nombre_de(addr):
@@ -189,7 +192,7 @@ def color_hf(hf):
 
 # ---------- Bloque 1: tu situación actual ----------
 modo = st.radio("¿Cómo quieres ver tu cartera?",
-                ["Con mi wallet", "Sin wallet: elijo mis inmuebles y tokens"], horizontal=True)
+                ["Con mi wallet", "Aún no invierto: simular una cartera"], horizontal=True)
 
 garantias, deuda0, tokens, rnt_estatus = [], 0.0, {}, 0.0
 if modo == "Con mi wallet":
@@ -247,19 +250,38 @@ if modo == "Con mi wallet":
     else:
         st.info("No hemos encontrado tokens de inmuebles en esta wallet.")
 else:
-    st.markdown("## Tu cartera")
-    opciones = sorted([a for a in activos if sirve_de_garantia(a) and a in por_addr
-                       and "CERRAD" not in str(por_addr[a].get("ESTADO", "")).upper()], key=nombre_de)
-    base = pd.DataFrame({"Proyecto": [nombre_de(a) for a in opciones], "Tokens": [0.0] * len(opciones)})
-    st.caption("Escribe cuántos tokens tienes (o tendrías) de cada inmueble. Solo aparecen los que se pueden "
-               "usar como garantía en RNT Lend.")
-    editado = st.data_editor(base, hide_index=True, use_container_width=True, key="tokens_manual",
-                             disabled=["Proyecto"],
-                             column_config={"Tokens": st.column_config.NumberColumn(min_value=0.0, step=1.0)})
-    for addr, n in zip(opciones, editado["Tokens"]):
-        if _num(n) > 0:
-            garantias.append(garantia_de(addr, _num(n)))
-    deuda0 = st.number_input("¿Ya tienes deuda en RNT Lend? (en $)", min_value=0.0, value=0.0, step=100.0)
+    st.markdown("## Tu cartera simulada")
+    st.caption("Indica cuánto invertirías en cada proyecto disponible hoy. Solo aparecen los que se pueden usar "
+               "como garantía en RNT Lend.")
+    opciones = sorted([a for a in comprables if sirve_de_garantia(a) and a in por_addr], key=nombre_de)
+    if not opciones:
+        st.info("Ahora mismo no hay proyectos disponibles que se puedan usar como garantía.")
+        st.stop()
+
+    def _precio_txt(a):
+        r = por_addr[a]
+        return f"{es(comprables[a]['precio'], 2)} {'$' if str(r.get('Divisa', '')).upper() in ('USD', '$', 'USDT') else '€'}"
+
+    base = pd.DataFrame({"Proyecto": [nombre_de(a) for a in opciones],
+                         "Precio por token": [_precio_txt(a) for a in opciones],
+                         "Importe que invertirías (€)": [0.0] * len(opciones)})
+    editado = st.data_editor(base, hide_index=True, use_container_width=True, key="cartera_simulada",
+                             disabled=["Proyecto", "Precio por token"],
+                             column_config={"Importe que invertirías (€)": st.column_config.NumberColumn(
+                                 min_value=0.0, step=100.0, format="%.0f")})
+    total_eur = 0.0
+    for addr, imp in zip(opciones, editado["Importe que invertirías (€)"]):
+        imp = _num(imp)
+        if imp <= 0:
+            continue
+        total_eur += imp
+        r = por_addr[addr]
+        en_usd = str(r.get("Divisa", "")).upper() in ("USD", "$", "USDT")
+        importe = imp * usd_por_eur if en_usd else imp            # en la divisa del proyecto
+        garantias.append(garantia_de(addr, importe / comprables[addr]["precio"]))
+    if total_eur > 0:
+        st.caption(f"Cartera simulada: {es(total_eur)} € invertidos en {len(garantias)} "
+                   f"proyecto{'s' if len(garantias) != 1 else ''}.")
 
 # ---------- Bloque 2: simula una financiación extra ----------
 st.markdown("## Simula una financiación extra")
@@ -331,32 +353,29 @@ estatus = st.selectbox(
     help=("Lo hemos detectado por los RNT que tienes en estatus en tu wallet; cámbialo si no es correcto."
           if modo == "Con mi wallet" else "Cambia la rentabilidad del proyecto y la de lo que reinviertes."))
 st.markdown("**¿En qué proyecto quieres invertir?**")
-candidatos = []
-for addr, r in por_addr.items():
-    fin = r.get("fecha_fin_calculo")
-    m = meses_hasta(fin)
-    if "CERRAD" in str(r.get("ESTADO", "")).upper() or m is None or m < MESES_MINIMOS:
-        continue
-    if _num(r.get("Precio Emisión")) <= 0:
-        continue
-    candidatos.append(addr)
-candidatos.sort(key=lambda a: (str(por_addr[a].get("ESTADO", "")).upper() != "FINANCIÁNDOSE", nombre_de(a)))
+candidatos = [a for a in comprables if a in por_addr and meses_hasta(por_addr[a].get("fecha_fin_calculo"))]
+candidatos.sort(key=lambda a: (comprables[a]["origen"] != "Financiación", nombre_de(a)))
+if error_otc:
+    st.caption("Ahora mismo no hemos podido revisar los proyectos en el mercado: solo aparecen los que se están "
+               "financiando.")
 if not candidatos:
     st.info("Ahora mismo no hay proyectos para calcular.")
     st.stop()
 destino = st.selectbox(
     "Proyecto", candidatos, label_visibility="collapsed",
-    format_func=lambda a: nombre_de(a) + (" · en financiación"
-                                          if str(por_addr[a].get("ESTADO", "")).upper() == "FINANCIÁNDOSE" else ""))
+    format_func=lambda a: nombre_de(a) + (" · en financiación" if comprables[a]["origen"] == "Financiación"
+                                          else " · en mercado"))
 fila = por_addr[destino]
 fin_destino = fila.get("fecha_fin_calculo")
 T = meses_hasta(fin_destino)
 divisa = "USD" if str(fila.get("Divisa", "EUR")).upper() in ("USD", "$", "USDT") else "EUR"
-precio = _num(fila.get("Precio Emisión"), 100.0)
+precio = comprables[destino]["precio"]           # emisión, o precio de mercado si se compra en OTC
 precio_usd = precio * (usd_por_eur if divisa == "EUR" else 1.0)
-rent = rentabilidad_ajustada(fila, estatus)
+rent = rentabilidad_ajustada(fila, estatus, precio)
 st.caption(f"Termina en {mes_texto(fin_destino)} (unos {es(T)} meses) · precio por token "
-           f"{es(precio, 2)} {'€' if divisa == 'EUR' else '$'} · rentabilidad total estimada con {estatus}: "
+           f"{es(precio, 2)} {'€' if divisa == 'EUR' else '$'}"
+           f"{' (precio de mercado)' if comprables[destino]['origen'] == 'Mercado' else ''}"
+           f" · rentabilidad total estimada con {estatus}: "
            f"{es(rent['total'], 1)} %")
 # Los tokens que se compran con el préstamo NO cuentan como garantía (sin «bucles» de pedir, comprar,
 # depositar y volver a pedir)
@@ -367,7 +386,7 @@ nuevo = {"garantia": False, "ltv": cfg_nuevo.get("ltv", 0.0), "umbral": cfg_nuev
 # ---------- Resultado ----------
 st.markdown("### ¿Cuánto puedes pedir?")
 if not garantias:
-    st.info("Indica tus inmuebles arriba para calcularlo." if modo != "Con mi wallet"
+    st.info("Indica arriba cuánto invertirías para calcularlo." if modo != "Con mi wallet"
             else "Para simularlo necesitas tokens que sirvan de garantía.")
     st.stop()
 with st.spinner("Consultando el tipo de interés de RNT Lend…"):
@@ -381,7 +400,13 @@ if res["vencidas"]:
     st.caption("No cuentan como garantía porque su fecha de fin ya ha pasado: "
                + ", ".join(g["nombre"] for g in res["vencidas"]) + ".")
 if maximo < 50:
-    if deuda0 > 0:
+    terminan = [g["nombre"] for g in res["activas"] if g.get("meses_fin") is not None and g["meses_fin"] < T]
+    if res["activas"] and len(terminan) == len(res["activas"]):
+        lista = terminan[0] if len(terminan) == 1 else ", ".join(terminan[:-1]) + " y " + terminan[-1]
+        st.warning(f"{lista} {'terminan' if len(terminan) > 1 else 'termina'} antes que {nombre_de(destino)}, así que "
+                   f"dejaría{'n' if len(terminan) > 1 else ''} de contar como garantía antes de que acabe el préstamo. "
+                   f"Prueba con un proyecto que termine antes o con inmuebles que terminen más tarde.")
+    elif deuda0 > 0:
         st.warning("Con tu deuda actual y los intereses hasta el final del proyecto, ahora mismo no puedes pedir "
                    "más sin acercarte demasiado a la liquidación.")
     else:
@@ -431,7 +456,7 @@ devolver = prestamo + interes
 # (el proyecto termina justo al final del plazo: así no se cuenta reinversión después de su venta)
 fila_plazo = dict(fila)
 fila_plazo["meses_hasta_fin"] = T
-ganancia = ganancia_proyecto(prestamo, fila_plazo, estatus, None, T)
+ganancia = ganancia_proyecto(prestamo, fila_plazo, estatus, precio, T)
 neto = ganancia - interes
 t1, t2, t3 = st.columns(3)
 t1.markdown(tarjeta("Con lo que pides compras", f"{es(tokens_compra, 1)} tokens",
