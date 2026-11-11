@@ -11,7 +11,7 @@ BOTON_DESPERTAR = "Yes, get this app back up!"
 
 def main():
     with sync_playwright() as p:
-        navegador = p.chromium.launch()
+        navegador = p.chromium.launch(channel="chrome")
         for url in APPS:
             pagina = navegador.new_page()
             try:
