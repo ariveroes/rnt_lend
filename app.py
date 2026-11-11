@@ -665,13 +665,10 @@ pct_hoy = datos_pct[0][1] if datos_pct else None
 pct_fin = datos_pct[-1][1] if datos_pct else None
 
 eje_x = alt.X("Fecha:T", title=None, axis=alt.Axis(format="%m/%Y", tickCount=8, labelAngle=0, grid=False))
-areas = alt.Chart(df_largo).mark_area(opacity=0.55, stroke="#ffffff", strokeWidth=2).encode(
-    x=eje_x, y=alt.Y("Valor:Q", stack=True, title="Dólares ($)",
-                     axis=alt.Axis(labelExpr="replace(format(datum.value, ',.0f'), /,/g, '.')")),
-    color=alt.Color("Inmueble:N", sort=series_g,
-                    scale=alt.Scale(domain=series_g, range=COLORES_GARANTIA[:len(series_g)]),
-                    legend=alt.Legend(orient="bottom", title="Garantía por inmueble")))
-linea_deuda = alt.Chart(df_ancho).mark_line(color=NAVY, strokeWidth=3).encode(x=eje_x, y="Deuda ($):Q")
+eje_y = alt.Y("Deuda ($):Q", title="Dólares ($)",
+              scale=alt.Scale(domain=[0, max(df_ancho["Liquidación ($)"].max(), df_ancho["Deuda ($)"].max()) * 1.12]),
+              axis=alt.Axis(labelExpr="replace(format(datum.value, ',.0f'), /,/g, '.')"))
+linea_deuda = alt.Chart(df_ancho).mark_line(color=NAVY, strokeWidth=3).encode(x=eje_x, y=eje_y)
 linea_liq = alt.Chart(df_ancho).mark_line(color=ROJO, strokeWidth=2, strokeDash=[6, 4]).encode(
     x=eje_x, y="Liquidación ($):Q")
 etiquetas = pd.DataFrame([
@@ -690,15 +687,30 @@ vertical = alt.Chart(df_ancho).mark_rule(color=GRIS, strokeWidth=1).encode(
     x="Fecha:T", opacity=alt.condition(cerca, alt.value(0.9), alt.value(0)), tooltip=campos).add_params(cerca)
 punto_deuda = alt.Chart(df_ancho).mark_point(color=NAVY, filled=True, size=60).encode(
     x="Fecha:T", y="Deuda ($):Q", opacity=alt.condition(cerca, alt.value(1), alt.value(0)))
-capas = [areas, linea_liq, linea_deuda, txt_lineas, vertical, punto_deuda]
+capas = [linea_liq, linea_deuda, txt_lineas, vertical, punto_deuda]
 if antes:
-    eventos = pd.DataFrame([{"Fecha": fecha_de(g["meses_fin"]), "t": f"Vence {g['nombre']}"} for g in antes])
-    capas.append(alt.Chart(eventos).mark_text(color=GRIS, align="right", dx=-4, y=10, fontSize=11).encode(
-        x="Fecha:T", text="t:N"))
+    # Una línea vertical por cada inmueble de la garantía que vence antes, con su texto en vertical
+    # Los que vencen en el mismo mes (o con menos de un mes de diferencia) van en una sola línea
+    grupos = []
+    for g in antes:
+        if grupos and g["meses_fin"] - grupos[-1][0] < 1.0:
+            grupos[-1][1].append(g["nombre"])
+        else:
+            grupos.append([g["meses_fin"], [g["nombre"]]])
+
+    def _texto_vence(nombres):
+        if len(nombres) == 1:
+            return f"Vence {nombres[0]} (deja de contar como garantía)"
+        return f"Vencen {', '.join(nombres[:-1])} y {nombres[-1]} (dejan de contar como garantía)"
+
+    eventos = pd.DataFrame([{"Fecha": fecha_de(m), "t": _texto_vence(n)} for m, n in grupos])
+    capas.append(alt.Chart(eventos).mark_rule(color=GRIS, strokeDash=[3, 3], strokeWidth=1.5).encode(x="Fecha:T"))
+    capas.append(alt.Chart(eventos).mark_text(color=GRIS, angle=270, align="right", baseline="bottom", dx=-6,
+                                              dy=-4, y=0, fontSize=11).encode(x="Fecha:T", text="t:N"))
 st.write("")
 st.markdown("**Cómo evoluciona tu deuda hasta el final** (con los intereses sumados, sin pagar nada)")
-st.caption("Los bloques de colores son tu garantía, inmueble a inmueble: cuando uno vence, desaparece. La línea "
-           "azul oscuro es tu deuda y la roja, el punto de liquidación. Pasa el ratón por el gráfico para ver los "
+st.caption("La línea azul oscuro es tu deuda y la roja, el punto de liquidación (80 % de tu garantía). Las líneas "
+           "verticales marcan cuándo vence cada inmueble de tu garantía. Pasa el ratón por el gráfico para ver los "
            "datos de cada fecha.")
 st.altair_chart(alt.layer(*capas).properties(height=360), use_container_width=True)
 
