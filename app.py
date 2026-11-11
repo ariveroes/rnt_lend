@@ -106,15 +106,19 @@ def _usd_por_eur():
 @st.cache_data(ttl=3600, show_spinner=False)
 def _pool(clave):
     """Activos del pool (LTV, umbral, aToken) y sus precios en el oráculo."""
-    activos = aave_lend.activos_garantia(clave)
-    precios = aave_lend.get_asset_prices(tuple(sorted(activos)), clave) if activos else {}
+    # Todo en lote (unas pocas llamadas en vez de una por proyecto); si fallara, una a una.
+    activos = aave_lend.activos_garantia_rapido(clave) or aave_lend.activos_garantia(clave)
+    lista = tuple(sorted(activos))
+    precios = (aave_lend.precios_rapido(lista, clave) or aave_lend.get_asset_prices(lista, clave)) if activos else {}
     return activos, precios
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def _tipo_interes(clave):
     """(APR, de dónde sale). Media histórica del préstamo en USDT; si no, el actual."""
-    medio = aave_lend.apr_borrow_medio_historico(USDT_POLYGON, clave)
+    # Rápido: compara el índice de intereses del primer día con el de hoy (2 lecturas).
+    # El método antiguo (descargar todo el histórico) tardaba 1-2 minutos, así que ya no se usa.
+    medio = aave_lend.apr_borrow_medio_rapido(USDT_POLYGON, clave)
     if medio:
         return medio, "media histórica del préstamo en USDT"
     actual = (aave_lend.config_de_reserva(USDT_POLYGON, clave) or {}).get("borrow_rate_apr")
@@ -142,12 +146,17 @@ def _leer_wallet(wallet, clave, activos_lista):
             elif str(tx.get("from", "")).lower() == wallet:
                 rnt_estatus -= valor
     tokens = {}
-    for addr, cfg in activos.items():
-        if addr not in tocados and cfg.get("atoken", "").lower() not in tocados:
-            continue
+    tocadas = [(addr, cfg) for addr, cfg in activos.items()
+               if addr in tocados or cfg.get("atoken", "").lower() in tocados]
+    # Saldos en lote: en garantía (aToken) y sueltos de cada proyecto, todos de una vez.
+    pares = []
+    for addr, cfg in tocadas:
         dec = cfg.get("decimales") or 18
-        en_garantia = aave_lend.balance_of(cfg["atoken"], wallet, dec, clave) if cfg.get("atoken") else 0.0
-        suelto = aave_lend.balance_of(addr, wallet, dec, clave)
+        pares += [(cfg.get("atoken") or addr, wallet, dec), (addr, wallet, dec)]
+    saldos = aave_lend.saldos_rapido(pares, clave) if pares else []
+    for i, (addr, cfg) in enumerate(tocadas):
+        en_garantia = saldos[2 * i] if cfg.get("atoken") else 0.0
+        suelto = saldos[2 * i + 1]
         if en_garantia > 0.0001 or suelto > 0.0001:
             tokens[addr] = {"garantia": en_garantia, "wallet": suelto}
     return cuenta, tokens, max(0.0, rnt_estatus)
