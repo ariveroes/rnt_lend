@@ -1,4 +1,3 @@
-
 """
 El maestro de inmuebles, leído una sola vez para toda la herramienta.
 
