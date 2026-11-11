@@ -103,7 +103,7 @@ def _usd_por_eur():
     return divisas.usd_por_euro() or USD_POR_EUR_DEFECTO
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def _pool(clave):
     """Activos del pool (LTV, umbral, aToken) y sus precios en el oráculo."""
     activos = aave_lend.activos_garantia(clave)
@@ -111,7 +111,7 @@ def _pool(clave):
     return activos, precios
 
 
-@st.cache_data(ttl=21600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def _tipo_interes(clave):
     """(APR, de dónde sale). Media histórica del préstamo en USDT; si no, el actual."""
     medio = aave_lend.apr_borrow_medio_historico(USDT_POLYGON, clave)
@@ -172,9 +172,16 @@ if df is None or df.empty or not activos:
 
 por_addr = {str(r.get("Token Address", "") or "").strip().lower(): r for _, r in df.iterrows()
             if str(r.get("Token Address", "") or "").startswith("0x")}
-# Lo que se puede comprar hoy y a qué precio: la misma lista que el Paso 3 del simulador
-with st.spinner("Revisando los proyectos disponibles…"):
-    comprables, error_otc = disponibles.comprables(df, clave, usd_por_eur)
+# Lo que se puede comprar hoy y a qué precio: la misma lista que el Paso 3 del simulador. Se lee solo
+# cuando hace falta (así la primera parte de la página sale antes) y el OTC se guarda un día.
+_comprables_leidos = {}
+
+
+def obtener_comprables():
+    if "v" not in _comprables_leidos:
+        with st.spinner("Revisando los proyectos disponibles…"):
+            _comprables_leidos["v"] = disponibles.comprables(df, clave, usd_por_eur)
+    return _comprables_leidos["v"]
 
 
 # ---------- Diagnóstico oculto (?diagnostico=1): por qué sale o no cada proyecto ----------
@@ -183,7 +190,11 @@ if str(st.query_params.get("diagnostico", "") or "") == "1":
         return v.strftime("%d/%m/%Y") if hasattr(v, "strftime") else "—"
 
     st.markdown("## Diagnóstico de proyectos")
-    st.caption("Para salir, quita «?diagnostico=1» de la dirección.")
+    st.caption("Para salir, quita «?diagnostico=1» de la dirección. La lista del OTC se guarda un día; si "
+               "acabáis de cambiar el documento, pulsa el botón.")
+    if st.button("Volver a leer el OTC ahora"):
+        disponibles.catalogo_otc.clear()
+    comprables, error_otc = obtener_comprables()
     if error_otc:
         st.error("No se ha podido leer el documento OTC: solo cuentan los proyectos que se están financiando.")
     filas_d = []
@@ -357,6 +368,7 @@ else:
                 f"style='color:{AMBAR_OSCURO}; font-weight:700;'>Agenda una llamada con nuestro equipo</a>.</div>",
                 unsafe_allow_html=True)
 
+    comprables, error_otc = obtener_comprables()
     opciones = sorted([a for a in comprables if sirve_de_garantia(a) and a in por_addr], key=nombre_de)
     if not opciones:
         st.info("Ahora mismo no hay proyectos disponibles que se puedan usar como garantía.")
@@ -497,6 +509,7 @@ if modo == "Con mi wallet":
 else:
     estatus = estatus_fijado
 st.markdown("**¿En qué proyecto quieres invertir?**")
+comprables, error_otc = obtener_comprables()
 candidatos = [a for a in comprables if a in por_addr and meses_hasta(por_addr[a].get("fecha_fin_calculo"))]
 candidatos.sort(key=lambda a: (comprables[a]["origen"] != "Financiación", nombre_de(a)))
 if error_otc:

@@ -43,9 +43,9 @@ def proyectos_para_catalogo(df):
     return tuple(filas)
 
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)    # un día
 def catalogo_otc(proyectos, api_key):
-    """Lo disponible hoy en OTC (mismos módulos que la herramienta OTC). Caché de 15 minutos."""
+    """Lo disponible hoy en OTC (mismos módulos que la herramienta OTC). Se guarda un día."""
     import otc_inventario
     from modules import otc_storage
 

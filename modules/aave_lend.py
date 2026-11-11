@@ -616,7 +616,7 @@ def salud_agregada(wallets: tuple, api_key: str, max_workers: int = 3,
 
 # ── Parámetros de riesgo de cada activo (para la calculadora de préstamo) ────
 
-@st.cache_data(show_spinner=False, ttl=3600)
+@st.cache_data(show_spinner=False, ttl=86400)
 def config_riesgo(asset: str, api_key: str) -> dict:
     """LTV, umbral de liquidación, decimales y aToken de una reserva.
 
@@ -646,7 +646,7 @@ def config_riesgo(asset: str, api_key: str) -> dict:
         return {}
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
+@st.cache_data(show_spinner=False, ttl=86400)
 def activos_garantia(api_key: str) -> dict:
     """{token_address: config_riesgo} de todos los activos del pool que no son
     stablecoins (los inmuebles). Incluye los que tienen LTV 0, para poder decir
