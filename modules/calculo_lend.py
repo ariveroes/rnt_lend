@@ -42,8 +42,13 @@ def _viva(g, t, final):
     return fin >= t if final else fin > t
 
 
-def capacidad(garantias: list, deuda0: float, apr: float, meses_plazo: float, nuevo: dict) -> dict:
+def capacidad(garantias: list, deuda0: float, apr: float, meses_plazo: float, nuevo: dict,
+              meses_pago: float | None = None) -> dict:
     """Préstamo máximo y qué lo limita.
+
+    meses_pago: si se pagan los intereses cada tantos meses, la deuda vuelve a lo
+      pedido en cada pago y como mucho crece durante ese tiempo. None = no se paga
+      nada hasta el final (lo normal en la herramienta).
 
     garantias: [{"nombre", "valor_usd", "ltv", "umbral", "meses_fin"}]; meses_fin
       None si no se sabe (se supone que dura más que el plazo).
@@ -70,7 +75,8 @@ def capacidad(garantias: list, deuda0: float, apr: float, meses_plazo: float, nu
         final = (t == T)
         vivas = [g for g in activas if _viva(g, t, final)]
         c_lim = sum(g["valor_usd"] * limite_activo(g.get("umbral")) for g in vivas)
-        f = math.exp(-apr * t / 12)
+        crece = t if not meses_pago else min(t, meses_pago)     # lo que puede crecer la deuda sin pagar
+        f = math.exp(-apr * crece / 12)
         candidatos.append({
             "maximo": (c_lim * f - deuda0) / max(1e-9, 1 - k_lim * f),
             "motivo": "final" if final else "fin_garantia", "mes": t,
@@ -111,3 +117,14 @@ def deuda_final(deuda0: float, prestamo: float, apr: float, meses_plazo: float) 
 def intereses(prestamo: float, apr: float, meses_plazo: float) -> float:
     """Intereses que genera solo el préstamo nuevo hasta el final."""
     return prestamo * (math.exp(apr * meses_plazo / 12) - 1)
+
+
+def intereses_pagando(prestamo: float, apr: float, meses_plazo: float, meses_pago: float) -> tuple:
+    """(lo que se paga cada vez, intereses totales) pagando los intereses cada meses_pago meses."""
+    if prestamo <= 0 or meses_plazo <= 0:
+        return 0.0, 0.0
+    cuota = prestamo * (math.exp(apr * meses_pago / 12) - 1)
+    completos = int(meses_plazo // meses_pago)
+    resto = meses_plazo - completos * meses_pago
+    total = cuota * completos + prestamo * (math.exp(apr * resto / 12) - 1)
+    return cuota, total
