@@ -660,3 +660,172 @@ def activos_garantia(api_key: str) -> dict:
         if cfg:
             res[a] = cfg
     return res
+
+
+# ── Lecturas en lote (Multicall3) y tipo medio rápido ────────────────────────
+# Cada eth_call por Etherscan va limitado a ~2,5 por segundo. Multicall3 (mismo
+# contrato en todas las redes) ejecuta muchas lecturas en una sola llamada, así
+# que leer la configuración o el precio de 50 activos pasa de ~20 s a ~1 s.
+
+MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11"
+SEL_AGGREGATE3 = "0x82ad56cb"   # aggregate3((address,bool,bytes)[])
+
+
+def _palabra(n: int) -> str:
+    return format(n, "064x")
+
+
+def _codificar_aggregate3(llamadas: list) -> str:
+    """Calldata de aggregate3 para [(destino, datos_hex), ...], con allowFailure=True."""
+    elementos = []
+    for destino, datos in llamadas:
+        cuerpo = datos[2:] if datos.startswith("0x") else datos
+        nbytes = len(cuerpo) // 2
+        relleno = cuerpo + "0" * ((64 - len(cuerpo) % 64) % 64)
+        elementos.append(_addr_arg(destino) + _palabra(1) + _palabra(0x60) + _palabra(nbytes) + relleno)
+    n = len(elementos)
+    offsets, pos = [], 32 * n
+    for e in elementos:
+        offsets.append(_palabra(pos))
+        pos += len(e) // 2
+    return SEL_AGGREGATE3 + _palabra(0x20) + _palabra(n) + "".join(offsets) + "".join(elementos)
+
+
+def _decodificar_aggregate3(raw: str) -> list:
+    """[(ok, datos_hex), ...] de la respuesta de aggregate3."""
+    h = raw[2:] if raw.startswith("0x") else raw
+    b = bytes.fromhex(h)
+    word = lambda pos: int.from_bytes(b[pos:pos + 32], "big")
+    inicio = word(0)
+    n = word(inicio)
+    base = inicio + 32
+    res = []
+    for i in range(n):
+        p = base + word(base + 32 * i)
+        ok = bool(word(p))
+        q = p + word(p + 32)
+        largo = word(q)
+        res.append((ok, "0x" + b[q + 32:q + 32 + largo].hex()))
+    return res
+
+
+def multicall(llamadas: list, api_key: str, lote: int = 10) -> list:
+    """Ejecuta [(destino, datos_hex), ...] en lotes. Devuelve [datos_hex o ""] en el mismo
+    orden ("" si esa lectura falla). Si el lote entero falla, se lee una a una."""
+    salida = []
+    for i in range(0, len(llamadas), lote):
+        trozo = llamadas[i:i + lote]
+        raw = eth_call(MULTICALL3, _codificar_aggregate3(trozo), api_key)
+        try:
+            res = _decodificar_aggregate3(raw) if raw else []
+        except Exception:
+            res = []
+        if len(res) != len(trozo):
+            res = [(True, eth_call(d, x, api_key)) for d, x in trozo]
+        salida.extend(datos if ok and datos not in ("", "0x") else "" for ok, datos in res)
+    return salida
+
+
+def _parse_config(raw: str) -> dict:
+    """Lo mismo que config_riesgo, a partir de la respuesta de getReserveData."""
+    if not raw:
+        return {}
+    h = raw[2:]
+    w = [h[i:i + 64] for i in range(0, len(h), 64)]
+    if len(w) < 11:
+        return {}
+    try:
+        cfg = int(w[0], 16)
+        return {"ltv": (cfg & 0xFFFF) / 10000, "umbral": ((cfg >> 16) & 0xFFFF) / 10000,
+                "decimales": (cfg >> 48) & 0xFF, "activa": bool((cfg >> 56) & 1),
+                "congelada": bool((cfg >> 57) & 1), "atoken": "0x" + w[8][-40:],
+                "indice_prestamo": int(w[3], 16) / RAY}
+    except ValueError:
+        return {}
+
+
+@st.cache_data(show_spinner=False, ttl=86400)
+def activos_garantia_rapido(api_key: str) -> dict:
+    """Como activos_garantia, pero con todas las lecturas en lote."""
+    activos = [a.lower() for a in reservas_del_pool(api_key) if a.lower() not in STABLES]
+    if not activos:
+        return {}
+    raws = multicall([(RNT_LEND_POOL, SEL_GET_RESERVE_DATA + _addr_arg(a)) for a in activos], api_key)
+    res = {}
+    for a, raw in zip(activos, raws):
+        cfg = _parse_config(raw)
+        if cfg:
+            res[a] = cfg
+    return res
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def precios_rapido(assets: tuple, api_key: str) -> dict:
+    """Como get_asset_prices, pero con todas las lecturas en lote."""
+    oracle = get_price_oracle(api_key)
+    if not oracle or not assets:
+        return {}
+    raws = multicall([(oracle, SEL_GET_ASSET_PRICE + _addr_arg(a)) for a in assets], api_key)
+    precios = {}
+    for a, raw in zip(assets, raws):
+        try:
+            if raw:
+                precios[a.lower()] = int(raw, 16) / BASE_UNIT
+        except ValueError:
+            continue
+    return precios
+
+
+def saldos_rapido(pares: list, api_key: str) -> list:
+    """[(token, wallet, decimales), ...] → [saldo, ...] con balanceOf en lote."""
+    raws = multicall([(t, SEL_BALANCE_OF + _addr_arg(w)) for t, w, _ in pares], api_key)
+    out = []
+    for (_, _, dec), raw in zip(pares, raws):
+        try:
+            out.append(int(raw, 16) / 10 ** (dec or 18) if raw else 0.0)
+        except ValueError:
+            out.append(0.0)
+    return out
+
+
+@st.cache_data(show_spinner=False, ttl=86400)
+def apr_borrow_medio_rapido(reserve_address: str, api_key: str) -> float | None:
+    """Tipo de préstamo medio desde el inicio de la reserva, con solo 2 lecturas.
+
+    El índice de préstamo de Aave (variableBorrowIndex) acumula todos los intereses
+    cobrados. Comparando el índice del primer evento de la reserva con el actual:
+        tipo medio = ln(índice_hoy / índice_inicio) / años transcurridos
+    Es la media ponderada por el tiempo del tipo real que se ha ido pagando, sin tener
+    que descargar todo el histórico de eventos (que tarda 1-2 minutos)."""
+    topic1 = "0x" + "0" * 24 + reserve_address[2:].lower()
+    params = {"chainid": POLYGON_CHAIN_ID, "module": "logs", "action": "getLogs", "address": RNT_LEND_POOL,
+              "topic0": RESERVE_DATA_UPDATED_TOPIC, "topic1": topic1, "topic0_1_opr": "and",
+              "fromBlock": 0, "toBlock": "latest", "page": 1, "offset": 1, "apikey": api_key}
+    primero = None
+    for intento in range(4):
+        _throttle()
+        try:
+            res = requests.get(ETHERSCAN_BASE, params=params, timeout=25).json().get("result")
+            if isinstance(res, list) and res:
+                primero = res[0]
+                break
+        except Exception:
+            pass
+        time.sleep(0.5 * (intento + 1))
+    if not primero:
+        return None
+    try:
+        hexd = primero["data"][2:]
+        palabras = [hexd[i:i + 64] for i in range(0, len(hexd), 64)]
+        indice_ini = int(palabras[4], 16) / RAY
+        ts = str(primero["timeStamp"])
+        t_ini = int(ts, 16) if ts.startswith("0x") else int(ts)
+    except Exception:
+        return None
+    cfg = _parse_config(eth_call(RNT_LEND_POOL, SEL_GET_RESERVE_DATA + _addr_arg(reserve_address), api_key))
+    indice_hoy = cfg.get("indice_prestamo")
+    anios = (time.time() - t_ini) / (365.25 * 86400)
+    if not indice_hoy or indice_ini <= 0 or anios < 0.05 or indice_hoy < indice_ini:
+        return None
+    import math
+    return math.log(indice_hoy / indice_ini) / anios
