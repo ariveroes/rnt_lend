@@ -408,7 +408,7 @@ else:
                         f"Rent. total ({estatus_cartera})": f"{es(ra['total'] or 0.0, 2)} %",
                         "Dossier": dossier_de(a)})
     st.markdown("**Elige los proyectos de tu cartera**")
-    st.caption("A continuación, se recogen los proyectos disponibles hoy para invertir que puedes usar como garantía "
+    st.caption("A continuación, se recogen los proyectos disponibles para invertir hoy y que puedes usar como garantía "
                "en RNT Lend. No aparecen los que no admiten garantía ni los que terminan en menos de 4 meses. "
                "Las rentabilidades están estimadas con tu estatus, según el precio y el momento de compra.")
     elegidos_df = st.data_editor(
