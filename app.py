@@ -177,6 +177,46 @@ with st.spinner("Revisando los proyectos disponibles…"):
     comprables, error_otc = disponibles.comprables(df, clave, usd_por_eur)
 
 
+# ---------- Diagnóstico oculto (?diagnostico=1): por qué sale o no cada proyecto ----------
+if str(st.query_params.get("diagnostico", "") or "") == "1":
+    def _f(v):
+        return v.strftime("%d/%m/%Y") if hasattr(v, "strftime") else "—"
+
+    st.markdown("## Diagnóstico de proyectos")
+    st.caption("Para salir, quita «?diagnostico=1» de la dirección.")
+    if error_otc:
+        st.error("No se ha podido leer el documento OTC: solo cuentan los proyectos que se están financiando.")
+    filas_d = []
+    for _, r in df.iterrows():
+        addr = str(r.get("Token Address", "") or "").strip().lower()
+        fin = r.get("fecha_fin_calculo")
+        m = meses_hasta(fin)
+        if not addr.startswith("0x"):
+            motivo = "Sin Token Address en el Master"
+        elif "CERRAD" in str(r.get("ESTADO", "")).upper():
+            motivo = "Cerrado"
+        elif fin is None or not hasattr(fin, "year"):
+            motivo = "Sin fecha de fin (ni auxiliar, ni real, ni I, ni F)"
+        elif m is not None and m < MESES_MINIMOS:
+            motivo = f"Termina en menos de {MESES_MINIMOS} meses"
+        elif addr not in comprables:
+            motivo = ("No está en financiación ni tiene 10 tokens o más en OTC"
+                      if str(r.get("ESTADO", "")).upper() != "FINANCIÁNDOSE" else "Sin precio de emisión")
+        else:
+            motivo = ""
+        filas_d.append({
+            "Proyecto": r.get("Nombre del proyecto", ""), "Estado": r.get("ESTADO", ""),
+            "Token Address": "Sí" if addr.startswith("0x") else "No",
+            "Financiación (G)": _f(r.get("fecha_financiacion")), "Fin desde financiación (I)": _f(r.get("fecha_fin_estimada")),
+            "Fin desde lanzamiento (F)": _f(r.get("fecha_fin_lanzamiento")), "Fin real": _f(r.get("fecha_fin_real")),
+            "Fin auxiliar (CA)": _f(r.get("fecha_fin_auxiliar")), "Fecha de fin usada": _f(fin),
+            "Precio emisión": r.get("Precio Emisión", ""),
+            "¿Sale en la lista?": "Sí" if not motivo else "No", "Motivo": motivo})
+    st.dataframe(pd.DataFrame(filas_d).sort_values(["¿Sale en la lista?", "Proyecto"]), hide_index=True,
+                 use_container_width=True)
+    st.stop()
+
+
 def nombre_de(addr):
     r = por_addr.get(addr)
     return str(r.get("Nombre del proyecto")) if r is not None else addr[:10] + "…"
@@ -217,34 +257,66 @@ modo = st.radio("¿Cómo quieres ver tu cartera?",
 garantias, deuda0, tokens, rnt_estatus = [], 0.0, {}, 0.0
 if modo == "Con mi wallet":
     st.markdown("## Tu situación actual")
-    c1, c2 = st.columns([3, 1])
-    wallet = c1.text_input("Dirección de tu wallet", placeholder="0x…", label_visibility="collapsed").strip()
-    if c2.button("Ver mi posición", type="primary", use_container_width=True):
-        if not (wallet.startswith("0x") and len(wallet) == 42):
-            st.error("La dirección no parece válida: empieza por 0x y tiene 42 caracteres.")
+    texto_wallets = st.text_area(
+        "Dirección de tu wallet", placeholder="0x…\n0x… (si tienes varias, una por línea)", height=88,
+        help="Puedes poner varias wallets, una por línea: verás tu posición total y la de cada una.")
+    if st.button("Ver mi posición", type="primary"):
+        wallets = []
+        for w in texto_wallets.replace(",", "\n").replace(";", "\n").split():
+            w = w.strip().lower()
+            if w and w not in wallets:
+                wallets.append(w)
+        malas = [w for w in wallets if not (w.startswith("0x") and len(w) == 42)]
+        if not wallets or malas:
+            st.error("Revisa las direcciones: cada una empieza por 0x y tiene 42 caracteres."
+                     + (f" No parece válida: {malas[0]}" if malas else ""))
         else:
-            with st.spinner("Leyendo tu posición en RNT Lend… (puede tardar unos segundos)"):
-                st.session_state.lend_wallet = (wallet.lower(),) + _leer_wallet(
-                    wallet.lower(), clave, tuple(sorted(activos.items())))
-    datos = st.session_state.get("lend_wallet")
-    if not datos:
+            with st.spinner("Leyendo tu posición en RNT Lend… (puede tardar unos segundos por wallet)"):
+                st.session_state.lend_wallets = [
+                    (w,) + _leer_wallet(w, clave, tuple(sorted(activos.items()))) for w in wallets]
+    leidas = st.session_state.get("lend_wallets")
+    if not leidas:
         st.stop()
-    _, cuenta, tokens, rnt_estatus = datos
-    if not cuenta:
-        st.warning("No hemos podido leer tu posición en RNT Lend. Prueba de nuevo en unos minutos.")
-    cuenta = cuenta or {}
-    deuda0 = cuenta.get("deuda_usd", 0.0)
-    colateral = cuenta.get("colateral_usd", 0.0)
-    hf = cuenta.get("health_factor")
+    if any(not c for _, c, _, _ in leidas):
+        st.warning("No hemos podido leer alguna de tus wallets en RNT Lend. Prueba de nuevo en unos minutos.")
+
+    # Posición total: se suman garantía, deuda y tokens de todas las wallets
+    tokens, rnt_estatus = {}, 0.0
+    colateral = deuda0 = garantia_umbral = 0.0
+    for _, c, toks, rnt_w in leidas:
+        c = c or {}
+        colateral += c.get("colateral_usd", 0.0)
+        deuda0 += c.get("deuda_usd", 0.0)
+        garantia_umbral += c.get("colateral_usd", 0.0) * (c.get("umbral_liquidacion") or 0.8)
+        rnt_estatus = max(rnt_estatus, rnt_w)
+        for a, t in toks.items():
+            acum = tokens.setdefault(a, {"garantia": 0.0, "wallet": 0.0})
+            acum["garantia"] += t["garantia"]
+            acum["wallet"] += t["wallet"]
+    hf = (garantia_umbral / deuda0) if deuda0 > 0.01 else None
+    varias = len(leidas) > 1
     k1, k2, k3 = st.columns(3)
     k1.markdown(tarjeta("¿Cuánto tengo ya aportado como garantía en RNT Lend?", dos(colateral),
-                        "Valor de tus tokens en garantía según RNT Lend", alto=True), unsafe_allow_html=True)
+                        "Valor de tus tokens en garantía según RNT Lend" + (" (todas tus wallets)" if varias else ""),
+                        alto=True), unsafe_allow_html=True)
     k2.markdown(tarjeta("¿A cuánto asciende mi deuda actualmente?", dos(deuda0),
                         "Lo que pediste más los intereses acumulados", alto=True), unsafe_allow_html=True)
-    k3.markdown(tarjeta("¿Cuál es mi factor de salud?", es(hf, 2) if hf else "Sin deuda",
+    k3.markdown(tarjeta("¿Cuál es mi factor de salud?" + (" (conjunto)" if varias else ""),
+                        es(hf, 2) if hf else "Sin deuda",
                         "Se liquida si baja de 1, es decir, cuando tu deuda llega al 80&nbsp;% de tu garantía."
                         if hf else "Sin riesgo de liquidación.", alto=True, color=color_hf(hf)),
                 unsafe_allow_html=True)
+    if varias:
+        st.write("")
+        st.dataframe(pd.DataFrame([{
+            "Wallet": f"{w[:6]}…{w[-4:]}",
+            "Garantía": f"{es((c or {}).get('colateral_usd', 0))} $",
+            "Deuda": f"{es((c or {}).get('deuda_usd', 0))} $",
+            "Factor de salud": (es(c["health_factor"], 2) if c and c.get("health_factor") else "Sin deuda"),
+        } for w, c, _, _ in leidas]), hide_index=True, use_container_width=True)
+        st.caption("En RNT Lend cada wallet es una posición independiente y se liquida por separado. Arriba ves "
+                   "el total y la simulación de abajo suma todos tus tokens como si estuvieran en una sola wallet: "
+                   "para pedir con toda esa garantía, tendrían que estar juntos en la misma.")
     st.write("")
     filas = []
     for addr, t in tokens.items():
@@ -537,7 +609,9 @@ t1.markdown(tarjeta("Con lo que pides compras", f"{es(tokens_compra, 1)} tokens"
                     f"de {nombre_de(destino)} ({es(prestamo)} $ · {es(prestamo / usd_por_eur)} €)"),
             unsafe_allow_html=True)
 t2.markdown(tarjeta("Al final devuelves", dos(devolver),
-                    f"{es(prestamo)} $ del préstamo + {es(interes)} $ de intereses ({es(apr * 100, 1)} % anual)"),
+                    f"{es(prestamo)} $ del préstamo + {es(interes)} $ de intereses. Tipo: {es(apr * 100, 1)} % anual; "
+                    f"en {es(T)} meses los intereses suman el {es(interes / prestamo * 100 if prestamo else 0, 1)} % "
+                    f"de lo que pides (ya incluye intereses sobre intereses)"),
             unsafe_allow_html=True)
 t3.markdown(tarjeta("Ganas de más", dos(neto, signo=True),
                     f"lo que gana el proyecto con tu estatus (~{es(ganancia)} $ · {es(ganancia / usd_por_eur)} €) "
@@ -548,45 +622,85 @@ if neto <= 0 and prestamo > 0:
             f"y el proyecto te daría un {es(ganancia / prestamo * 100)} %. Prueba con otro proyecto"
             + (" o con un estatus superior." if estatus != "SuperReentel" else "."))
 
-# Gráfico: deuda sobre garantía hasta el final
+# Gráfico: la garantía de cada inmueble (bloques que desaparecen al vencer) y la deuda encima
 puntos = calculo_lend.evolucion(garantias, deuda0, prestamo, apr, T, nuevo)
 hoy = pd.Timestamp(date.today())
 fecha_de = lambda m: hoy + pd.Timedelta(days=m * 30.4375)
-datos_g = pd.DataFrame([{"Fecha": fecha_de(m), "Deuda": p} for m, p, _, _ in puntos if p is not None])
-pct_hoy = datos_g["Deuda"].iloc[0] if len(datos_g) else None
-pct_fin = datos_g["Deuda"].iloc[-1] if len(datos_g) else None
-antes = sorted([g for g in res["activas"] if g.get("meses_fin") is not None and g["meses_fin"] < T],
+validas_g = [g for g in res["activas"]]
+antes = sorted([g for g in validas_g if g.get("meses_fin") is not None and g["meses_fin"] < T],
                key=lambda g: g["meses_fin"])
+# Un color fijo por inmueble (máx. 6; el resto se agrupa en «Otros»). Sin naranja ni rojo, que son de la
+# deuda y la liquidación.
+COLORES_GARANTIA = ["#2a78d6", "#1baf7a", "#6250d6", "#e87ba4", "#008300", "#eda100", "#94a3b8"]
+orden = sorted(validas_g, key=lambda g: -g["valor_usd"])
+nombre_serie = {id(g): (g["nombre"] if k < 6 else "Otros") for k, g in enumerate(orden)}
+series_g = list(dict.fromkeys(nombre_serie[id(g)] for g in orden))
+
+largo, ancho = [], []
+for m, pct, deuda_t, _ in puntos:
+    final = abs(m - T) < 1e-9
+    vivas = [g for g in validas_g if calculo_lend._viva(g, m, final)]
+    fecha_m = fecha_de(m)
+    por_serie = {n: 0.0 for n in series_g}
+    for g in vivas:
+        por_serie[nombre_serie[id(g)]] += g["valor_usd"]
+    for n in series_g:
+        largo.append({"Fecha": fecha_m, "Inmueble": n, "Valor": por_serie[n]})
+    garantia_t = sum(por_serie.values())
+    liq_t = sum(g["valor_usd"] * (g.get("umbral") or 0.8) for g in vivas)
+    fila_a = {"Fecha": fecha_m, "Mes": fecha_m.strftime("%m/%Y"), "Deuda ($)": round(deuda_t),
+              "Liquidación ($)": round(liq_t),
+              # textos ya formateados en español para la ventana del ratón
+              "Deuda": f"{es(deuda_t)} $ · {es(deuda_t / usd_por_eur)} €",
+              "Garantía": f"{es(garantia_t)} $ · {es(garantia_t / usd_por_eur)} €",
+              "Liquidación": f"{es(liq_t)} $",
+              "Deuda sobre garantía": f"{es(pct, 1)} %" if pct is not None else "—",
+              "Factor de salud": es(liq_t / deuda_t, 2) if deuda_t > 0 else "—"}
+    for n in series_g:
+        fila_a[f"g_{n}"] = f"{es(por_serie[n])} $" if por_serie[n] > 0 else "ya ha vencido"
+    ancho.append(fila_a)
+df_largo, df_ancho = pd.DataFrame(largo), pd.DataFrame(ancho)
+datos_pct = [(m, p) for m, p, _, _ in puntos if p is not None]
+pct_hoy = datos_pct[0][1] if datos_pct else None
+pct_fin = datos_pct[-1][1] if datos_pct else None
 
 eje_x = alt.X("Fecha:T", title=None, axis=alt.Axis(format="%m/%Y", tickCount=8, labelAngle=0, grid=False))
-base_g = alt.Chart(datos_g).encode(x=eje_x)
-area = base_g.mark_area(color=AMBAR, opacity=0.18).encode(
-    y=alt.Y("Deuda:Q", title="Deuda sobre garantía (%)", scale=alt.Scale(domain=[0, 95])))
-linea = base_g.mark_line(color=NAVY, strokeWidth=3).encode(
-    y="Deuda:Q", tooltip=[alt.Tooltip("Fecha:T", format="%m/%Y", title="Fecha"),
-                          alt.Tooltip("Deuda:Q", format=".1f", title="Deuda sobre garantía (%)")])
-liquidacion = alt.Chart(pd.DataFrame({"y": [80.0]})).mark_rule(color=ROJO, strokeDash=[6, 4], strokeWidth=2).encode(y="y:Q")
-txt_liq = alt.Chart(pd.DataFrame({"x": [datos_g["Fecha"].iloc[0]], "y": [80.0],
-                                  "t": ["Liquidación: 80 %"]})).mark_text(
-    color=ROJO, align="left", dx=4, dy=-8, fontSize=12, fontWeight="bold").encode(x="x:T", y="y:Q", text="t:N")
-extremos = pd.DataFrame([{"Fecha": datos_g["Fecha"].iloc[0], "Deuda": pct_hoy, "t": f"Hoy: {es(pct_hoy)} %",
-                          "a": "left"},
-                         {"Fecha": datos_g["Fecha"].iloc[-1], "Deuda": pct_fin, "t": f"Final: {es(pct_fin)} %",
-                          "a": "right"}])
-puntos_ext = alt.Chart(extremos).mark_point(color=NAVY, filled=True, size=70).encode(x="Fecha:T", y="Deuda:Q")
-txt_ini = alt.Chart(extremos.iloc[:1]).mark_text(color=NAVY, align="left", dx=6, dy=-12, fontSize=13,
-                                                 fontWeight="bold").encode(x="Fecha:T", y="Deuda:Q", text="t:N")
-txt_fin = alt.Chart(extremos.iloc[1:]).mark_text(color=NAVY, align="right", dx=-6, dy=-12, fontSize=13,
-                                                 fontWeight="bold").encode(x="Fecha:T", y="Deuda:Q", text="t:N")
-capas = [area, linea, liquidacion, txt_liq, puntos_ext, txt_ini, txt_fin]
+areas = alt.Chart(df_largo).mark_area(opacity=0.55, stroke="#ffffff", strokeWidth=2).encode(
+    x=eje_x, y=alt.Y("Valor:Q", stack=True, title="Dólares ($)",
+                     axis=alt.Axis(labelExpr="replace(format(datum.value, ',.0f'), /,/g, '.')")),
+    color=alt.Color("Inmueble:N", sort=series_g,
+                    scale=alt.Scale(domain=series_g, range=COLORES_GARANTIA[:len(series_g)]),
+                    legend=alt.Legend(orient="bottom", title="Garantía por inmueble")))
+linea_deuda = alt.Chart(df_ancho).mark_line(color=NAVY, strokeWidth=3).encode(x=eje_x, y="Deuda ($):Q")
+linea_liq = alt.Chart(df_ancho).mark_line(color=ROJO, strokeWidth=2, strokeDash=[6, 4]).encode(
+    x=eje_x, y="Liquidación ($):Q")
+etiquetas = pd.DataFrame([
+    {"Fecha": df_ancho["Fecha"].iloc[0], "y": df_ancho["Deuda ($)"].iloc[0], "t": "Tu deuda", "c": NAVY},
+    {"Fecha": df_ancho["Fecha"].iloc[0], "y": df_ancho["Liquidación ($)"].iloc[0], "t": "Liquidación (80 %)",
+     "c": ROJO}])
+txt_lineas = alt.Chart(etiquetas).mark_text(align="left", dx=6, dy=-9, fontSize=12, fontWeight="bold").encode(
+    x="Fecha:T", y="y:Q", text="t:N", color=alt.Color("c:N", scale=None))
+# Al pasar el ratón: una línea vertical con todos los datos de esa fecha
+cerca = alt.selection_point(nearest=True, on="pointermove", fields=["Fecha"], empty=False, clear="pointerout")
+campos = ([alt.Tooltip("Mes:N", title="Fecha"), alt.Tooltip("Deuda:N", title="Tu deuda"),
+           alt.Tooltip("Garantía:N", title="Tu garantía"), alt.Tooltip("Liquidación:N", title="Se liquida si la deuda llega a"),
+           alt.Tooltip("Deuda sobre garantía:N"), alt.Tooltip("Factor de salud:N")]
+          + [alt.Tooltip(f"g_{n}:N", title=n) for n in series_g])
+vertical = alt.Chart(df_ancho).mark_rule(color=GRIS, strokeWidth=1).encode(
+    x="Fecha:T", opacity=alt.condition(cerca, alt.value(0.9), alt.value(0)), tooltip=campos).add_params(cerca)
+punto_deuda = alt.Chart(df_ancho).mark_point(color=NAVY, filled=True, size=60).encode(
+    x="Fecha:T", y="Deuda ($):Q", opacity=alt.condition(cerca, alt.value(1), alt.value(0)))
+capas = [areas, linea_liq, linea_deuda, txt_lineas, vertical, punto_deuda]
 if antes:
-    eventos = pd.DataFrame([{"Fecha": fecha_de(g["meses_fin"]), "t": f"Termina {g['nombre']}"} for g in antes])
-    capas.append(alt.Chart(eventos).mark_rule(color=GRIS, strokeDash=[2, 3]).encode(x="Fecha:T"))
-    capas.append(alt.Chart(eventos).mark_text(color=GRIS, align="right", dx=-4, y=12, fontSize=11).encode(
+    eventos = pd.DataFrame([{"Fecha": fecha_de(g["meses_fin"]), "t": f"Vence {g['nombre']}"} for g in antes])
+    capas.append(alt.Chart(eventos).mark_text(color=GRIS, align="right", dx=-4, y=10, fontSize=11).encode(
         x="Fecha:T", text="t:N"))
 st.write("")
 st.markdown("**Cómo evoluciona tu deuda hasta el final** (con los intereses sumados, sin pagar nada)")
-st.altair_chart(alt.layer(*capas).properties(height=320), use_container_width=True)
+st.caption("Los bloques de colores son tu garantía, inmueble a inmueble: cuando uno vence, desaparece. La línea "
+           "azul oscuro es tu deuda y la roja, el punto de liquidación. Pasa el ratón por el gráfico para ver los "
+           "datos de cada fecha.")
+st.altair_chart(alt.layer(*capas).properties(height=360), use_container_width=True)
 
 if pct_hoy is not None:
     texto = (f"Al pedir este préstamo, tu deuda será el **{es(pct_hoy)} %** del valor de tu garantía (factor de "
@@ -617,6 +731,63 @@ else:
     motivo = ("Porque, con los intereses acumulados, el último día tu deuda llegaría al 80 % de tu garantía, que es "
               "el punto de liquidación.")
 st.markdown(f"**¿Por qué no puedes pedir más de {es(maximo)} $ ({es(maximo / usd_por_eur)} €)?** {motivo}")
+
+# ---------- ¿Y si vas pagando los intereses? ----------
+# Pagando los intereses cada cierto tiempo la deuda no se acumula y se puede pedir más. Para cada frecuencia:
+# cuánto se puede pedir, cuánto se paga cada vez, los intereses totales y lo que se gana de más.
+gana_por_dolar = ganancia_proyecto(1000.0, fila_plazo, estatus, precio, T) / 1000.0
+frecuencias = [("Sin pagar hasta el final", None), ("Cada año", 12), ("Cada 6 meses", 6), ("Cada 3 meses", 3),
+               ("Cada mes", 1)]
+filas_f = []
+for etiqueta, meses_p in frecuencias:
+    if meses_p is not None and meses_p >= T:
+        continue
+    cap = calculo_lend.capacidad(garantias, deuda0, apr, T, nuevo, meses_p)["maximo"]
+    cap = max(0.0, cap // 50 * 50)
+    if meses_p is None:
+        cuota, total_int = 0.0, calculo_lend.intereses(cap, apr, T)
+    else:
+        cuota, total_int = calculo_lend.intereses_pagando(cap, apr, T, meses_p)
+    filas_f.append({"etiqueta": etiqueta, "max": cap, "cuota": cuota, "intereses": total_int,
+                    "neto": cap * gana_por_dolar - total_int})
+if len(filas_f) > 1:
+    mejor_f = max(filas_f, key=lambda f: f["neto"])
+    st.markdown("### ¿Y si vas pagando los intereses?")
+    st.caption("Si pagas los intereses cada cierto tiempo, tu deuda no crece y puedes pedir más. Cada fila usa el "
+               "máximo que podrías pedir con esa frecuencia. Los pagos los haces con tu dinero o con las rentas "
+               "que vas cobrando.")
+    cab = ("<tr style='background:#f3f4f6; color:#374151; font-size:13px;'>"
+           "<th style='text-align:left; padding:8px 10px;'>Pago de intereses</th>"
+           "<th style='text-align:right; padding:8px 10px;'>Puedes pedir hasta</th>"
+           "<th style='text-align:right; padding:8px 10px;'>Pagas cada vez</th>"
+           "<th style='text-align:right; padding:8px 10px;'>Intereses totales</th>"
+           "<th style='text-align:right; padding:8px 10px;'>Ganas de más</th></tr>")
+    cuerpo = ""
+    for f in filas_f:
+        optima = f is mejor_f and f["neto"] > 0
+        estilo = f"background:#fff4de; font-weight:700;" if optima else "background:#ffffff;"
+        cuerpo += (
+            f"<tr style='{estilo} border-top:1px solid #e5e7eb; font-size:14px; color:{NAVY};'>"
+            f"<td style='padding:8px 10px;'>{f['etiqueta']}"
+            + (f" <span style='color:{AMBAR_OSCURO};'>· óptima</span>" if optima else "") + "</td>"
+            f"<td style='text-align:right; padding:8px 10px;'>{es(f['max'])} $<br><span style='color:{GRIS}; "
+            f"font-size:12px; font-weight:400;'>{es(f['max'] / usd_por_eur)} €</span></td>"
+            f"<td style='text-align:right; padding:8px 10px;'>"
+            + ("—" if not f["cuota"] else f"{es(f['cuota'])} $<br><span style='color:{GRIS}; font-size:12px; "
+                                          f"font-weight:400;'>{es(f['cuota'] / usd_por_eur)} €</span>")
+            + f"</td><td style='text-align:right; padding:8px 10px;'>{es(f['intereses'])} $<br><span "
+              f"style='color:{GRIS}; font-size:12px; font-weight:400;'>{es(f['intereses'] / usd_por_eur)} €</span></td>"
+            f"<td style='text-align:right; padding:8px 10px;'>{'+' if f['neto'] >= 0 else '−'}{es(abs(f['neto']))} $"
+            f"<br><span style='color:{GRIS}; font-size:12px; font-weight:400;'>"
+            f"{'+' if f['neto'] >= 0 else '−'}{es(abs(f['neto']) / usd_por_eur)} €</span></td></tr>")
+    st.markdown(f"<div style='overflow-x:auto;'><table style='width:100%; border-collapse:collapse; border:1px "
+                f"solid #e5e7eb; border-radius:10px; overflow:hidden;'>{cab}{cuerpo}</table></div>",
+                unsafe_allow_html=True)
+    if mejor_f["neto"] > 0:
+        st.caption(f"La frecuencia óptima es la que más te hace ganar: **{mejor_f['etiqueta'].lower()}**.")
+    else:
+        st.caption("Con este proyecto y tu estatus, ninguna frecuencia compensa: los intereses superan lo que gana "
+                   "el proyecto.")
 
 with st.expander("Cómo se calcula"):
     st.markdown(
