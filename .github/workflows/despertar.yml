@@ -15,8 +15,6 @@ jobs:
         with:
           python-version: "3.12"
       - name: Instalar el navegador
-        run: |
-          pip install playwright
-          python -m playwright install --with-deps chromium
+        run: pip install playwright
       - name: Visitar las apps
         run: python .github/scripts/despertar_apps.py
